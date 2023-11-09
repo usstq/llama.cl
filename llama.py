@@ -3,13 +3,19 @@ import sys, os
 import argparse
 import time
 
+import psutil
+
 import time
 import math
 import torch
 import torch.nn.functional as F
 from torch import nn
 
+import llext1
+
 from transformers import AutoTokenizer, TextStreamer
+
+from torch.profiler import profile, record_function, ProfilerActivity
 
 # for our purpose:
 #    OP concept is nothing but association of const data with the forward method
@@ -46,11 +52,21 @@ class OP_rms_norm:
 
 class OP_fc:
     def __init__(self, weight, bias) -> None:
+        print(weight.shape)
+        # weight.shape : [N, K]
+        self.wq8c, self.wq8c_scales = llext1.FC_quant_Q8C(weight)
+        self.N = weight.shape[0]
         self.weight = weight
         self.bias = bias
 
     def __call__(self, input):
-        return F.linear(input, self.weight, self.bias)
+        assert(len(input.shape) == 3)
+        #return F.linear(input, self.weight, self.bias)
+        #print("==========", input.shape, self.wq8c.shape, self.wq8c_scales.shape, self.weight.shape, self.N)
+        output = llext1.FC_evaluate_Q8C(input, self.wq8c, self.wq8c_scales, self.N)
+        if self.bias:
+            output += self.bias
+        return output # F.linear(input, self.weight, self.bias)
 
 class OP_embedding:
     def __init__(self, weight) -> None:
@@ -71,7 +87,6 @@ class KVCache:
         self.beam_table = torch.zeros(batch_size, max_kv_len, dtype=torch.int32)
         for b in range(batch_size):
             self.beam_table[b,:] = b
-        
         self.verbose = verbose
 
     # the early stop check is vital to guarantee meaningful response
@@ -158,15 +173,28 @@ class OP_mha:
             half_rotary_dim = self.rotary_dims//2
             for k in range(q_len):
                 cur_position_id = kv_cache.position_id + k
-                for i0 in range(half_rotary_dim):
-                    i1 = i0 + half_rotary_dim
-                    xita = (inv_freq[i0] * cur_position_id)
-                    vcos = math.cos(xita)
-                    vsin = math.sin(xita)
-                    y0 = vcos * x[:, :, k, i0] - vsin * x[:, :, k, i1]
-                    y1 = vsin * x[:, :, k, i0] + vcos * x[:, :, k, i1]
-                    x[:, :, k, i0] = y0
-                    x[:, :, k, i1] = y1
+
+                # better for python
+                xita = inv_freq * cur_position_id
+                vcos = torch.cos(xita)
+                vsin = torch.sin(xita)
+                x0 = x[:, :, k, :half_rotary_dim]
+                x1 = x[:, :, k, half_rotary_dim:]
+                y0 = vcos * x0 - vsin * x1
+                y1 = vsin * x0 + vcos * x1
+                x[:, :, k, :half_rotary_dim] = y0
+                x[:, :, k, half_rotary_dim:] = y1
+
+                ## better for C++
+                #for i0 in range(half_rotary_dim):
+                #    i1 = i0 + half_rotary_dim
+                #   xita = (inv_freq[i0] * cur_position_id)
+                #    vcos = math.cos(xita)
+                #    vsin = math.sin(xita)
+                #    y0 = vcos * x[:, :, k, i0] - vsin * x[:, :, k, i1]
+                #    y1 = vsin * x[:, :, k, i0] + vcos * x[:, :, k, i1]
+                #    x[:, :, k, i0] = y0
+                #    x[:, :, k, i1] = y1
 
         rope_embedd(query_states)
         rope_embedd(key_states)
@@ -259,7 +287,6 @@ class Model:
         rope_base = 10000
         self.inv_freq = 1.0 / (rope_base ** (torch.arange(0, configs["rotary_dims"], 2).float().to("cpu") / configs["rotary_dims"]))
 
-
     def forward(self, input_ids, kv_cache):
         op_dict = self.op_dict
         inputs_embeds = op_dict['model.embed_tokens'](input_ids)
@@ -304,7 +331,9 @@ def simple_chat_pipeline(hf_model_path, max_kv_len, system_message, verbose):
     streamer = TextStreamer(tokenizer)
 
     print(f"load config/weight from HF model {hf_model_path} ...")
+    print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
     model = Model(hf_model_path)
+    print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
 
     if max_kv_len > model.configs["max_position_embeddings"]:
         max_kv_len = model.configs["max_position_embeddings"]
@@ -375,16 +404,19 @@ def simple_chat_pipeline(hf_model_path, max_kv_len, system_message, verbose):
             if early_stop:
                 print("\033[0;31m", early_stop)
 
-            print("\033[0;90m", f" position_id: {kv_cache.position_id}  latency: {first_tok_latency*1e3:.2f} ms + {second_tok_latency*1e3:.2f}ms x {second_tok_count}")
+            print("\033[0;90m", f" position_id: {kv_cache.position_id}  latency: {first_tok_latency*1e3:.2f} ms + {second_tok_latency*1e3:.2f}ms x {second_tok_count}  rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MB")
             print("\033[00m")
-
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser('')
-    parser.add_argument('--org_model_path', type=str, nargs='?', default='/home/llm_irs/models_original/llama-2-7b-chat/pytorch/')
+    
+    # /home/tingqian/models/chinese-alpaca-2-1.3b-hf
+    # C:/Users/tingqian/Syncplicity/LTQ/Models/chinese-alpaca-2-1.3b-hf
+    parser.add_argument('--org_model_path', type=str, nargs='?', default='/home/tingqian/models/chinese-alpaca-2-1.3b-hf')
     parser.add_argument('--sys', type=str, default=None)
     parser.add_argument('--kv-len', type=int, default=128)
     parser.add_argument('-v', '--verbose', action="store_true")
     parser.add_argument('--quant_type', type=str, nargs='?', default='')
     args = parser.parse_args()
+    torch.set_num_threads(16)
     simple_chat_pipeline(args.org_model_path, args.kv_len, args.sys, args.verbose)
