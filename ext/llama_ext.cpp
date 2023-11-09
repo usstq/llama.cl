@@ -4,6 +4,9 @@
 #include <sstream>
 #include "intrinsic_helpers.hpp"
 
+// #define INTEL_NO_ITTNOTIFY_API 
+#include <ittnotify.h>
+
 // Torch tensor basics
 //  https://pytorch.org/cppdocs/notes/tensor_indexing.html
 //  include\ATen\core\TensorBody.h
@@ -35,13 +38,7 @@ std::vector<at::Tensor> FC_quant_Q8C(torch::Tensor wei)
 
     at::parallel_for(0, Ngroups * group_n, 0, [&](int64_t n0, int64_t n1)
                      {
-        if (n0 == 0) {
-            std::cout << n0 << "->" << n1 << std::endl;
-        }
         for (auto n = n0; n < n1; n++) {
-            if (n0 == 0) {
-                std::cout << n << "," << std::flush;
-            }
             if (n >= N) {
                 wei_scales.index_put_({n}, 0);
                 return;
@@ -66,11 +63,12 @@ std::vector<at::Tensor> FC_quant_Q8C(torch::Tensor wei)
             auto nb = n / group_n;
             auto noff = (n - nb * group_n);
             q8_c_block *wq8 = reinterpret_cast<q8_c_block*>(wei_quantized.index({nb, 0, 0}).data_ptr<int8_t>());
+            const float* pweight = wei.index({n, 0}).data_ptr<float>();
             for (int64_t kb = 0, k0 = 0; kb < Kgroups; kb++, k0 += group_k, wq8++) {
                 for (int64_t ki = 0; ki < group_k; ki++) {
                     auto src_k = k0 + ki;
                     if (src_k < K) {
-                        wq8->at(ki, noff) = std::roundf(wei.index({n, src_k}).item<float>() * id);
+                        wq8->at(ki, noff) = std::roundf(pweight[src_k] * id);
                     } else {
                         wq8->at(ki, noff) = 0;
                     }
@@ -86,6 +84,10 @@ void FC_dynamic_quantize_x(torch::Tensor &input,
                            int64_t Kgroups, int64_t group_k,
                            float scale = 1.0f)
 {
+    __itt_event mark_event = __itt_event_create("DYNQ", 3);
+
+    __itt_event_start(mark_event);
+
     auto B = input.size(0);
     auto M = input.size(1);
     auto K = input.size(2);
@@ -136,10 +138,12 @@ void FC_dynamic_quantize_x(torch::Tensor &input,
             }
             */
         } } });
+    __itt_event_end(mark_event);
 }
 
 torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, torch::Tensor wei_scales, int N)
 {
+    __itt_event mark_event = __itt_event_create("evalQ8C", 3);
     auto Ngroups = wei_quantized.size(0);
     auto Kgroups = wei_quantized.size(1);
     int group_k = 32;
@@ -164,6 +168,8 @@ torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, 
     torch::Tensor x_scales;
 
     FC_dynamic_quantize_x(input, x_quantized, x_scales, Kgroups, group_k);
+
+    __itt_event_start(mark_event);
 
     at::parallel_for(0, Ngroups, 1, [&](int64_t nb0, int64_t nb1)
                      {
@@ -229,6 +235,7 @@ torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, 
                 _mm256_storeu_ps(py + 8 * 3, acc3);
             }
         } } });
+    __itt_event_end(mark_event);
 
     return output;
 }

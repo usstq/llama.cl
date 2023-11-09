@@ -2,6 +2,7 @@ import numpy as np
 import sys, os
 import argparse
 import time
+import pickle
 
 import psutil
 
@@ -38,8 +39,8 @@ from torch.profiler import profile, record_function, ProfilerActivity
 # concept. we just need to make sure basic building blocks are consistent
 
 class OP_rms_norm:
-    def __init__(self, weights, variance_epsilon) -> None:
-        self.weights = weights
+    def __init__(self, weight, variance_epsilon) -> None:
+        self.weight = torch.clone(weight)
         self.variance_epsilon = variance_epsilon
         pass
 
@@ -48,16 +49,19 @@ class OP_rms_norm:
         input = input.to(torch.float32)
         variance = input.pow(2).mean(-1, keepdim=True)
         input = input * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weights * input.to(input_dtype)
+        return self.weight * input.to(input_dtype)
+
+    def __repr__(self):
+        return f"OP_rms_norm(weight: {self.weight.shape}{self.weight.dtype}, esp:{self.variance_epsilon})"
 
 class OP_fc:
     def __init__(self, weight, bias) -> None:
         print(weight.shape)
         # weight.shape : [N, K]
-        self.wq8c, self.wq8c_scales = llext1.FC_quant_Q8C(weight)
+        #self.wq8c, self.wq8c_scales = llext1.FC_quant_Q8C(weight)
         self.N = weight.shape[0]
-        self.weight = weight
-        self.bias = bias
+        self.bias = torch.clone(bias) if bias is not None else bias
+        #self.weight = weight
 
     def __call__(self, input):
         assert(len(input.shape) == 3)
@@ -68,12 +72,18 @@ class OP_fc:
             output += self.bias
         return output # F.linear(input, self.weight, self.bias)
 
+    def __repr__(self):
+        return f"OP_fc(weight: {self.wq8c.shape}{self.wq8c.dtype}" + ")" if self.bias is None else f", bias: {self.bias.shape}{self.bias.dtype})"
+
 class OP_embedding:
     def __init__(self, weight) -> None:
-        self.weight = weight
+        self.weight = torch.clone(weight)
 
     def __call__(self, input):
         return F.embedding(input, self.weight)
+
+    def __repr__(self):
+        return f"OP_embedding(weight: {self.weight.shape}{self.weight.dtype})"
 
 class KVCache:
     def __init__(self, configs, batch_size, max_kv_len, verbose) -> None:
@@ -230,14 +240,19 @@ class OP_mha:
         attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
         return attn_output
 
+    def __repr__(self):
+        return f"OP_mha(layer_idx:{self.layer_idx}, hidden_size:{self.hidden_size}, rotary_dims:{self.rotary_dims}, num_heads:{self.num_heads}, head_dim:{self.head_dim})"
 #=================================================================
 # input_ids  : [batch, query_len]
 # kv_cache   : [2 * n_layers, batch, n_head, max_kv_len, head_size]
 # beam_table : [batch, max_kv_len]
 # attn_mask  : [batch, query_len+past_len]
 class Model:
-    def __init__(self, path) -> None:
-        print(f'extracting from model "{path}"...')
+    def __init__(self) -> None:
+        pass
+
+    def load_from_HF(self, path) -> None:
+        print(f"load config/weight from HF model {path} ...")
         beg = time.time()
         from transformers import AutoModelForCausalLM
         hf_model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True).to('cpu').eval()
@@ -280,12 +295,33 @@ class Model:
             ],
         }
         cost = time.time() - beg
-        print(f'extracting done, cost {cost:.2f} seconds.\nmodel configs:')
-        for k, v in configs.items():
-            print(f'	{k}: {v}')
+        print(f'extracting done, cost {cost:.2f} seconds')
+
         self.configs = configs
         rope_base = 10000
         self.inv_freq = 1.0 / (rope_base ** (torch.arange(0, configs["rotary_dims"], 2).float().to("cpu") / configs["rotary_dims"]))
+
+    def load(self, path) -> None:
+        print(f"loading model from {path}...")
+        with open(path, 'rb') as f:
+            tmp_dict = pickle.load(f)
+        self.__dict__.update(tmp_dict)
+
+    def save(self, path):
+        print(f"saving model to {path}...")
+        with open(path, 'wb') as f:
+            pickle.dump(self.__dict__, f)
+
+    def __repr__(self):
+        ret = "Model configs :\n"
+        for k, v in self.configs.items():
+            ret += f'\t {k}: {v}\n'
+        
+        ret += "OPs:\n"
+        import json
+        ret += json.dumps(self.op_dict, indent=4, default=str)
+        return ret
+
 
     def forward(self, input_ids, kv_cache):
         op_dict = self.op_dict
@@ -319,7 +355,7 @@ class Model:
 
 #=================================================================
 # simple greedy pipeline using model_forward
-def simple_chat_pipeline(hf_model_path, max_kv_len, system_message, verbose):
+def simple_chat_pipeline(model, hf_model_path, org_prompt, max_kv_len, system_message, verbose):
     global inv_freq
     print(f"load Tokenizer from {hf_model_path}...")
     tokenizer = AutoTokenizer.from_pretrained(hf_model_path, trust_remote_code=True)
@@ -329,11 +365,6 @@ def simple_chat_pipeline(hf_model_path, max_kv_len, system_message, verbose):
     tokenizer.padding_side = "left"             # pad to left
 
     streamer = TextStreamer(tokenizer)
-
-    print(f"load config/weight from HF model {hf_model_path} ...")
-    print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
-    model = Model(hf_model_path)
-    print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
 
     if max_kv_len > model.configs["max_position_embeddings"]:
         max_kv_len = model.configs["max_position_embeddings"]
@@ -355,11 +386,14 @@ def simple_chat_pipeline(hf_model_path, max_kv_len, system_message, verbose):
                 logits = model.forward(input_ids, kv_cache)
                 sys_msg = None
 
-            print("\033[0;32m")
-            try:
-                prompt = input(">")
-            except EOFError:
-                break
+            if org_prompt:
+                prompt = org_prompt
+            else:
+                print("\033[0;32m")
+                try:
+                    prompt = input(">")
+                except EOFError:
+                    break
 
             # kv-segment for question/instruction part
             sentence_id += 1
@@ -406,17 +440,35 @@ def simple_chat_pipeline(hf_model_path, max_kv_len, system_message, verbose):
 
             print("\033[0;90m", f" position_id: {kv_cache.position_id}  latency: {first_tok_latency*1e3:.2f} ms + {second_tok_latency*1e3:.2f}ms x {second_tok_count}  rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MB")
             print("\033[00m")
+            if org_prompt:
+                break
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser('')
     
     # /home/tingqian/models/chinese-alpaca-2-1.3b-hf
     # C:/Users/tingqian/Syncplicity/LTQ/Models/chinese-alpaca-2-1.3b-hf
-    parser.add_argument('--org_model_path', type=str, nargs='?', default='/home/tingqian/models/chinese-alpaca-2-1.3b-hf')
+    parser.add_argument('-hf', '--hf_model', type=str, nargs='?', default='C:/Users/tingqian/Syncplicity/LTQ/Models/chinese-alpaca-2-1.3b-hf')
+    parser.add_argument('-m', '--model', type=str, default='C:/Users/tingqian/Syncplicity/LTQ/Code/llama.cl/saved_model.pkl')
+    parser.add_argument('--save', action="store_true")
     parser.add_argument('--sys', type=str, default=None)
     parser.add_argument('--kv-len', type=int, default=128)
     parser.add_argument('-v', '--verbose', action="store_true")
     parser.add_argument('--quant_type', type=str, nargs='?', default='')
+    parser.add_argument('prompt', type=str, nargs='?')
+    
     args = parser.parse_args()
-    torch.set_num_threads(16)
-    simple_chat_pipeline(args.org_model_path, args.kv_len, args.sys, args.verbose)
+
+    model = Model()
+
+    print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
+    if args.model:
+        model.load(args.model)
+    else:
+        model.load_from_HF(args.hf_model)
+        if args.save:
+            model.save('saved_model.pkl')
+    print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
+    print(model)
+
+    simple_chat_pipeline(model, args.hf_model, args.prompt, args.kv_len, args.sys, args.verbose)
