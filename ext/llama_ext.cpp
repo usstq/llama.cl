@@ -5,8 +5,22 @@
 #include "intrinsic_helpers.hpp"
 #include "ktensor.hpp"
 
-#define INTEL_NO_ITTNOTIFY_API
+#ifdef USE_ITT_API
 #include <ittnotify.h>
+__itt_domain* domain = __itt_domain_create("MyTraces.MyDomain");
+static void itt_task_begin(const char * name) {
+    static __itt_string_handle* shMyTask = __itt_string_handle_create(name);
+    __itt_task_begin(domain, __itt_null, __itt_null, shMyTask);
+}
+static void itt_task_end() {
+    __itt_task_end(domain);
+}
+#else
+static void itt_task_begin(const char * name) {
+}
+static void itt_task_end() {
+}
+#endif
 
 // Torch tensor basics
 //  https://pytorch.org/cppdocs/notes/tensor_indexing.html
@@ -85,9 +99,7 @@ bool FC_dynamic_quantize_x(torch::Tensor &input,
                            int64_t Kgroups, int64_t group_k,
                            float scale = 1.0f)
 {
-    __itt_event mark_event = __itt_event_create("DYNQ", 3);
-
-    __itt_event_start(mark_event);
+    itt_task_begin("DYNQ");
 
     auto B = input.size(0);
     auto M = input.size(1);
@@ -139,7 +151,7 @@ bool FC_dynamic_quantize_x(torch::Tensor &input,
             }
             */
         } } });
-    __itt_event_end(mark_event);
+    itt_task_end();
     return true;
 }
 
@@ -244,7 +256,7 @@ void kernel_evaluate_Q8C(Ktensor<int8_t> x_q8,    // B, M, Kgroups*group_k
 
 torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, torch::Tensor wei_scales, int N)
 {
-    static __itt_event mark_event = __itt_event_create("evalQ8C", 3);
+    itt_task_begin("evalQ8C");
     auto Ngroups = wei_quantized.size(0);
     auto Kgroups = wei_quantized.size(1);
     int group_k = 32;
@@ -268,14 +280,13 @@ torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, 
     torch::Tensor x_scales;
     FC_dynamic_quantize_x(input, x_quantized, x_scales, Kgroups, group_k);
 
-    __itt_event_start(mark_event);
     kernel_evaluate_Q8C(Ktensor<int8_t>(x_quantized.data_ptr<int8_t>(), {B, M, Kgroups*group_k}),    // B,M, Kgroups*group_k
                         Ktensor<float>(x_scales.data_ptr<float>(), {B, M, Kgroups}),
                         Ktensor<float>(output.data_ptr<float>(), {B, M, N}),
                         Ktensor<q8_c_block>(wei_quantized.data_ptr<int8_t>(), {Ngroups, Kgroups}),
                         Ktensor<float>(wei_scales.data_ptr<float>(), {N}));
-    __itt_event_end(mark_event);
-
+    
+    itt_task_end();
     return output;
 }
 
