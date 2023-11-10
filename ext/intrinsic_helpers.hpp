@@ -94,6 +94,38 @@ struct VNNI_Sequence {
     }
 };
 
+// intrinsic helpers
+//  VNNI has long latency, high throughput, thus requires more independent data to
+//  fill the port & hide the latency, which means more independent accumulator regs in brgemm
+struct vnni_inst {
+    const __m256i ones = _mm256_set1_epi16(1);
+    const __m256i zero = _mm256_setzero_si256();
+
+    __m256i operator()(const __m256i x, const __m256i y) {
+#if __AVXVNNIINT8__
+        const __m256i summed_pairs = _mm256_dpbssd_epi32(zero, x, y);
+        return summed_pairs;
+#elif __AVXVNNI__
+        // Get absolute values of x vectors (x becomes u8 : 0~128)
+        const __m256i ax = _mm256_sign_epi8(x, x);
+        // Sign the values of the y vectors (negative sign of x is combined with y)
+        const __m256i sy = _mm256_sign_epi8(y, x);
+        const __m256i summed_pairs = _mm256_dpbusd_epi32(zero, ax, sy);
+        return summed_pairs;
+#else
+        // Get absolute values of x vectors (x becomes u8 : 0~128)
+        const __m256i ax = _mm256_sign_epi8(x, x);
+        // Sign the values of the y vectors (negative sign of x is combined with y)
+        const __m256i sy = _mm256_sign_epi8(y, x);
+
+        // u8 x s8
+        const __m256i dot = _mm256_maddubs_epi16(ax, sy);
+        return _mm256_madd_epi16(dot, ones);
+#endif
+    }
+};
+
+
 struct VNNI_INT8_Sequence {
     __m256i operator()(__m256i acc, const __m256i x, const __m256i y) {
 #if __AVXVNNIINT8__

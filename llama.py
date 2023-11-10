@@ -58,7 +58,7 @@ class OP_fc:
     def __init__(self, weight, bias) -> None:
         print(weight.shape)
         # weight.shape : [N, K]
-        #self.wq8c, self.wq8c_scales = llext1.FC_quant_Q8C(weight)
+        self.wq8c, self.wq8c_scales = llext1.FC_quant_Q8C(weight)
         self.N = weight.shape[0]
         self.bias = torch.clone(bias) if bias is not None else bias
         #self.weight = weight

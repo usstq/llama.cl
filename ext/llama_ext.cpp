@@ -3,8 +3,9 @@
 #include <iostream>
 #include <sstream>
 #include "intrinsic_helpers.hpp"
+#include "ktensor.hpp"
 
-// #define INTEL_NO_ITTNOTIFY_API 
+#define INTEL_NO_ITTNOTIFY_API
 #include <ittnotify.h>
 
 // Torch tensor basics
@@ -78,7 +79,7 @@ std::vector<at::Tensor> FC_quant_Q8C(torch::Tensor wei)
     return {wei_quantized, wei_scales};
 }
 
-void FC_dynamic_quantize_x(torch::Tensor &input,
+bool FC_dynamic_quantize_x(torch::Tensor &input,
                            torch::Tensor &x_quantized,
                            torch::Tensor &x_scales,
                            int64_t Kgroups, int64_t group_k,
@@ -139,56 +140,45 @@ void FC_dynamic_quantize_x(torch::Tensor &input,
             */
         } } });
     __itt_event_end(mark_event);
+    return true;
 }
 
-torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, torch::Tensor wei_scales, int N)
+void kernel_evaluate_Q8C(Ktensor<int8_t> x_q8,    // B, M, Kgroups*group_k
+                         Ktensor<float> x_scales, // B, M, Kgroups
+                         Ktensor<float> output,   // B,M,N
+                         Ktensor<q8_c_block> w_q8, // Ngroups, Kgroups
+                         Ktensor<float> w_scales  // N
+)
 {
-    __itt_event mark_event = __itt_event_create("evalQ8C", 3);
-    auto Ngroups = wei_quantized.size(0);
-    auto Kgroups = wei_quantized.size(1);
-    int group_k = 32;
-    int group_n = 32;
-    auto B = input.size(0);
-    auto M = input.size(1);
-    auto K = input.size(2);
-    auto options =
-        torch::TensorOptions()
-            .dtype(torch::kFloat32)
-            .layout(torch::kStrided)
-            .device(torch::kCPU, 1)
-            .requires_grad(false);
-
-    auto output = torch::empty({B, M, N}, options);
+    auto B = output.size(0);
+    auto M = output.size(1);
+    auto N = output.size(2);
+    constexpr auto group_k = 32;
+    constexpr auto group_n = 32;
+    auto Ngroups = w_q8.size(0);
+    auto Kgroups = w_q8.size(1);
     auto y_stride = output.stride(1);
+    vnni_inst vnni_i8;
 
-    VNNI_INT8_Sequence vnni_i8;
-    assert(K == m_config.K);
-
-    torch::Tensor x_quantized;
-    torch::Tensor x_scales;
-
-    FC_dynamic_quantize_x(input, x_quantized, x_scales, Kgroups, group_k);
-
-    __itt_event_start(mark_event);
-
-    at::parallel_for(0, Ngroups, 1, [&](int64_t nb0, int64_t nb1)
+    at::parallel_for(0, Ngroups, 0, [&](int64_t nb0, int64_t nb1)
                      {
         for(auto nb = nb0; nb < nb1; nb++) {
         int64_t n0 = nb * group_n;
-        float *pwei_scales = wei_scales.index({n0}).data_ptr<float>();
+        float *pwei_scales = &w_scales({n0});
         // B & M dimensions are collapsed as 1 dimension
         for (int64_t b = 0; b < B; b++) {
             for (int64_t m = 0; m < M; m++) {
-                float *py = output.index({b, m, n0}).data_ptr<float>();
-                const float *q8_xd = x_scales.index({b, m, 0}).data_ptr<float>();
-                const int8_t *q8_xq = x_quantized.index({b, m, 0}).data_ptr<int8_t>();
+                float *py = &output({b, m, n0});
+                const float *q8_xd = &x_scales({b, m, 0});
+                const int8_t *q8_xq = &x_q8({b, m, 0});
 
                 __m256 acc0 = _mm256_setzero_ps();
                 __m256 acc1 = _mm256_setzero_ps();
                 __m256 acc2 = _mm256_setzero_ps();
                 __m256 acc3 = _mm256_setzero_ps();
-
-                const q8_c_block *wq8 = reinterpret_cast<q8_c_block *>(wei_quantized.index({nb, 0, 0}).data_ptr<int8_t>());
+                const __m256i ones = _mm256_set1_epi16(1);
+                const q8_c_block *wq8 = &w_q8({nb, 0});
+                //std::cout << std::hex << reinterpret_cast<const void*>(wq8) << std::endl;
                 for (int kb = 0, k0 = 0; kb < Kgroups; kb++, k0 += group_k, q8_xd++, wq8++) {
                     // K group is smallest quantization unit which shares single scale
                     auto acci0 = _mm256_setzero_si256();
@@ -204,10 +194,25 @@ torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, 
                         __m256i y2 = _mm256_loadu_si256((const __m256i *)(q8_weight + 32 * 2));
                         __m256i y3 = _mm256_loadu_si256((const __m256i *)(q8_weight + 32 * 3));
 
-                        acci0 = vnni_i8(acci0, x0, y0);
-                        acci1 = vnni_i8(acci1, x0, y1);
-                        acci2 = vnni_i8(acci2, x0, y2);
-                        acci3 = vnni_i8(acci3, x0, y3);
+                        // apply sign in x0 to y0~y3
+                        y0 = _mm256_sign_epi8(y0, x0);
+                        y1 = _mm256_sign_epi8(y1, x0);
+                        y2 = _mm256_sign_epi8(y2, x0);
+                        y3 = _mm256_sign_epi8(y3, x0);
+
+                        // Get absolute values of x vectors (x becomes u8 : 0~128)
+                        x0 = _mm256_sign_epi8(x0, x0);
+
+                        // u8 x s8
+                        y0 = _mm256_maddubs_epi16(x0, y0);
+                        y1 = _mm256_maddubs_epi16(x0, y1);
+                        y2 = _mm256_maddubs_epi16(x0, y2);
+                        y3 = _mm256_maddubs_epi16(x0, y3);
+
+                        acci0 = _mm256_add_epi32(acci0, _mm256_madd_epi16(y0, ones));
+                        acci1 = _mm256_add_epi32(acci1, _mm256_madd_epi16(y1, ones));
+                        acci2 = _mm256_add_epi32(acci2, _mm256_madd_epi16(y2, ones));
+                        acci3 = _mm256_add_epi32(acci3, _mm256_madd_epi16(y3, ones));
                     }
                     auto dx = _mm256_broadcast_ss(q8_xd);
                     // dequantize per-group k
@@ -235,6 +240,40 @@ torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, 
                 _mm256_storeu_ps(py + 8 * 3, acc3);
             }
         } } });
+}
+
+torch::Tensor FC_evaluate_Q8C(torch::Tensor input, torch::Tensor wei_quantized, torch::Tensor wei_scales, int N)
+{
+    static __itt_event mark_event = __itt_event_create("evalQ8C", 3);
+    auto Ngroups = wei_quantized.size(0);
+    auto Kgroups = wei_quantized.size(1);
+    int group_k = 32;
+    int group_n = 32;
+    auto B = input.size(0);
+    auto M = input.size(1);
+    auto K = input.size(2);
+    auto options =
+        torch::TensorOptions()
+            .dtype(torch::kFloat32)
+            .layout(torch::kStrided)
+            .device(torch::kCPU, 1)
+            .requires_grad(false);
+
+    auto output = torch::empty({B, M, N}, options);
+    auto y_stride = output.stride(1);
+
+    vnni_inst vnni_i8;
+
+    torch::Tensor x_quantized;
+    torch::Tensor x_scales;
+    FC_dynamic_quantize_x(input, x_quantized, x_scales, Kgroups, group_k);
+
+    __itt_event_start(mark_event);
+    kernel_evaluate_Q8C(Ktensor<int8_t>(x_quantized.data_ptr<int8_t>(), {B, M, Kgroups*group_k}),    // B,M, Kgroups*group_k
+                        Ktensor<float>(x_scales.data_ptr<float>(), {B, M, Kgroups}),
+                        Ktensor<float>(output.data_ptr<float>(), {B, M, N}),
+                        Ktensor<q8_c_block>(wei_quantized.data_ptr<int8_t>(), {Ngroups, Kgroups}),
+                        Ktensor<float>(wei_scales.data_ptr<float>(), {N}));
     __itt_event_end(mark_event);
 
     return output;
