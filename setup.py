@@ -1,3 +1,4 @@
+import sys
 from setuptools import setup, Extension
 from torch.utils import cpp_extension
 
@@ -53,7 +54,7 @@ setup(name='chatllama',
                 )],
       cmdclass={'build_ext': cpp_extension.BuildExtension},
       install_requires=[
-        'torch>=2.1.0',
-        'transformers>=4.35.0'
+        'torch>=2.0.1',
+        'transformers>=4.31.0'
       ])
 

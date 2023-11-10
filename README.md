@@ -17,14 +17,12 @@ Download models:
 
 Chat with the model
 ```bash
+# export quantized 4bit pickle to saved_model.pkl (default pickle )
+python -m chatllama -hf /path/to/hugging_face_model/ -q q4a --save
 # run model (in Q&A mode)
-python -m chatllama -hf /path/to/hugging_face_model/ "What's oxygen?"
+python -m chatllama "What's oxygen?"
 # run model (in chat mode with kv-cache of 512 tokens)
-python -m chatllama -hf /path/to/hugging_face_model/ --kv-len 512
-# export quantized 8bit pickle
-python -m chatllama -hf /path/to/hugging_face_model/ --save
-# load from pickle
-python -m chatllama -m /path/to/saved_pkl_file/
+python -m chatllama --kv-len 512
 # check internal kv-cache status
-python -m chatllama -m /path/to/saved_pkl_file/ -v
+python -m chatllama -v
 ```

@@ -288,6 +288,14 @@ class Model:
         pass
 
     def load_from_HF(self, path, quant_type) -> None:
+        print(f"load Tokenizer from {path}...")
+        tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            tokenizer.pad_token = tokenizer.eos_token_id
+        tokenizer.padding_side = "left"             # pad to left
+        self.tokenizer = tokenizer
+
         print(f"load config/weight from HF model {path} ...")
         beg = time.time()
         from transformers import AutoModelForCausalLM
@@ -397,15 +405,10 @@ class Model:
 
 #=================================================================
 # simple greedy pipeline using model_forward
-def simple_chat_pipeline(model, hf_model_path, org_prompt, max_kv_len, system_message, verbose):
+def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose):
     global inv_freq
-    print(f"load Tokenizer from {hf_model_path}...")
-    tokenizer = AutoTokenizer.from_pretrained(hf_model_path, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-        tokenizer.pad_token = tokenizer.eos_token_id
-    tokenizer.padding_side = "left"             # pad to left
 
+    tokenizer = model.tokenizer
     streamer = TextStreamer(tokenizer)
 
     if max_kv_len > model.configs["max_position_embeddings"]:
@@ -490,8 +493,8 @@ def main():
     
     # /home/tingqian/models/chinese-alpaca-2-1.3b-hf
     # C:/Users/tingqian/Syncplicity/LTQ/Models/chinese-alpaca-2-1.3b-hf
-    parser.add_argument('-hf', '--hf_model', type=str, nargs='?', default='C:/Users/tingqian/Syncplicity/LTQ/Models/chinese-alpaca-2-1.3b-hf')
-    parser.add_argument('-m', '--model', type=str, default='C:/Users/tingqian/Syncplicity/LTQ/Code/llama.cl/saved_model.pkl')
+    parser.add_argument('-hf', '--hf_model', type=str)
+    parser.add_argument('-m', '--model', type=str, default='saved_model.pkl')
     parser.add_argument('-q', '--quant', type=str)
     parser.add_argument('--save', action="store_true")
     parser.add_argument('--sys', type=str, default=None)
@@ -504,13 +507,14 @@ def main():
     model = Model()
 
     print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
-    if args.model and args.model != "":
-        model.load(args.model)
-    else:
+    if args.hf_model:
         model.load_from_HF(args.hf_model, args.quant)
         if args.save:
             model.save('saved_model.pkl')
+    else:
+        model.load(args.model)
+
     print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
     print(model)
 
-    simple_chat_pipeline(model, args.hf_model, args.prompt, args.kv_len, args.sys, args.verbose)
+    simple_chat_pipeline(model, args.prompt, args.kv_len, args.sys, args.verbose)
