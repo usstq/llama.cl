@@ -2,11 +2,12 @@
 
 To support infinite chat exprience, model & pipeline was re-implemented using pytorch, with neccessary optimizations done in python + torch extension.
 
-build torch extension
+build and install chatllama
 
 ```bash
-cd ext
 python -m pip install . -v
+# or in editable/develop mode
+python -m pip install -e .
 ```
 
 Download models:
@@ -17,13 +18,13 @@ Download models:
 Chat with the model
 ```bash
 # run model (in Q&A mode)
-python .\llama.py -hf /path/to/hugging_face_model/ "What's oxygen?"
+python -m chatllama -hf /path/to/hugging_face_model/ "What's oxygen?"
 # run model (in chat mode with kv-cache of 512 tokens)
-python .\llama.py -hf /path/to/hugging_face_model/ --kv-len 512
+python -m chatllama -hf /path/to/hugging_face_model/ --kv-len 512
 # export quantized 8bit pickle
-python .\llama.py -hf /path/to/hugging_face_model/ --save
+python -m chatllama -hf /path/to/hugging_face_model/ --save
 # load from pickle
-python .\llama.py -m /path/to/saved_pkl_file/
+python -m chatllama -m /path/to/saved_pkl_file/
 # check internal kv-cache status
-python .\llama.py -m /path/to/saved_pkl_file/ -v
+python -m chatllama -m /path/to/saved_pkl_file/ -v
 ```

@@ -1,4 +1,3 @@
-import numpy as np
 import sys, os
 import argparse
 import time
@@ -12,7 +11,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 
-import llext1
+from . import c_ext
 
 from transformers import AutoTokenizer, TextStreamer
 
@@ -58,7 +57,7 @@ class OP_fc:
     def __init__(self, weight, bias) -> None:
         print(weight.shape)
         # weight.shape : [N, K]
-        self.wq8c, self.wq8c_scales = llext1.FC_quant_Q8C(weight)
+        self.wq8c, self.wq8c_scales = c_ext.FC_quant_Q8C(weight)
         self.N = weight.shape[0]
         self.bias = torch.clone(bias) if bias is not None else bias
         #self.weight = weight
@@ -67,7 +66,7 @@ class OP_fc:
         assert(len(input.shape) == 3)
         #return F.linear(input, self.weight, self.bias)
         #print("==========", input.shape, self.wq8c.shape, self.wq8c_scales.shape, self.weight.shape, self.N)
-        output = llext1.FC_evaluate_Q8C(input, self.wq8c, self.wq8c_scales, self.N)
+        output = c_ext.FC_evaluate_Q8C(input, self.wq8c, self.wq8c_scales, self.N)
         if self.bias:
             output += self.bias
         return output # F.linear(input, self.weight, self.bias)
