@@ -147,7 +147,7 @@ class KVCache:
             print(f"qlen={query_len}, sid={sentence_id}, slot={self.cur_slot}")
 
         cur_slot = self.cur_slot
-        self.slots = []
+        self.slots = torch.empty(query_len, dtype=torch.int32)
         for k in range(query_len):
             # skip cache slot reserved for system message
             while self.mask[cur_slot] < 0:
@@ -160,7 +160,7 @@ class KVCache:
                     print(f" return false on self.mask[{cur_slot}] = {self.mask[cur_slot]}")
                 return False
 
-            self.slots.append(cur_slot)
+            self.slots[k] = cur_slot
             cur_slot = (cur_slot + 1) % self.max_kv_len
         self.cur_slot = cur_slot
 
@@ -265,10 +265,8 @@ class OP_mha:
         #    ....
         # [batch, num_heads, q_len ,kv_len] 
         for k in range(q_len-1):
-            tokens_to_remove = (q_len - 1 - k)
-            for d in range(tokens_to_remove):
-                pos = kv_cache.slots[q_len - 1 - d]
-                attn_weights[:, :, k, pos] = torch.finfo(torch.float32).min
+            pos = torch.arange(start=(k + 1), end=q_len, step=1, dtype = torch.int32)
+            attn_weights[:, :, k, pos] = torch.finfo(torch.float32).min
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
         attn_output = torch.matmul(attn_weights, value_states)
@@ -498,7 +496,7 @@ def main():
     parser.add_argument('-q', '--quant', type=str)
     parser.add_argument('--save', action="store_true")
     parser.add_argument('--sys', type=str, default=None)
-    parser.add_argument('--kv-len', type=int, default=128)
+    parser.add_argument('--kv-len', type=int, default=2048)
     parser.add_argument('-v', '--verbose', action="store_true")
     parser.add_argument('prompt', type=str, nargs='?')
     
