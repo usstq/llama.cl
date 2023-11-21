@@ -2,11 +2,11 @@ import sys, os
 import argparse
 import time
 import pickle
-
 import psutil
-
+import json
 import time
 import math
+
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -15,7 +15,11 @@ from . import c_ext
 
 from transformers import AutoTokenizer, TextStreamer
 
-from torch.profiler import profile, record_function, ProfilerActivity
+current_file_path = os.path.dirname(os.path.abspath(__file__))
+sys.path.append("C:/Users/tingqian/Syncplicity/LTQ/Code/llama.cl/ops/build/Debug/")
+
+import numpy
+import llmops
 
 # for our purpose:
 #    OP concept is nothing but association of const data with the forward method
@@ -48,7 +52,8 @@ class OP_rms_norm:
         input = input.to(torch.float32)
         variance = input.pow(2).mean(-1, keepdim=True)
         input = input * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * input.to(input_dtype)
+        output = self.weight * input.to(input_dtype)
+        return output
 
     def __repr__(self):
         return f"OP_rms_norm(weight: {self.weight.shape}{self.weight.dtype}, esp:{self.variance_epsilon})"
@@ -281,9 +286,9 @@ class OP_mha:
 # kv_cache   : [2 * n_layers, batch, n_head, max_kv_len, head_size]
 # beam_table : [batch, max_kv_len]
 # attn_mask  : [batch, query_len+past_len]
-class Model:
+class Model(nn.Module):
     def __init__(self) -> None:
-        pass
+        super(Model, self).__init__()
 
     def load_from_HF(self, path, quant_type) -> None:
         print(f"load Tokenizer from {path}...")
@@ -348,6 +353,7 @@ class Model:
         self.configs = configs
         rope_base = 10000
         self.inv_freq = 1.0 / (rope_base ** (torch.arange(0, configs["rotary_dims"], 2).float().to("cpu") / configs["rotary_dims"]))
+        #self.compute_graph_emitter(hf_model)
 
     def load(self, path) -> None:
         print(f"loading model from {path}...")
@@ -364,23 +370,71 @@ class Model:
         ret = "Model configs :\n"
         for k, v in self.configs.items():
             ret += f'\t {k}: {v}\n'
-        
         ret += "OPs:\n"
-        import json
         ret += json.dumps(self.op_dict, indent=4, default=str)
         return ret
 
+    def compute_graph_emitter(self, hf_model):
+        from . import opset
+        OP = opset.tensor
+        input_ids = OP("input_ids:parameter")
+        kv_cache = OP("kv_cache:parameter")
+        inputs_embeds = OP("embed", input_ids, hf_model.model.embed_tokens.weight)
+        hidden_states = inputs_embeds
+        inv_freq = OP.from_aten(self.inv_freq)
+        rms_norm_eps = hf_model.config.rms_norm_eps
+        for i, l in enumerate(hf_model.model.layers):
+            input_layernorm = OP("input_layernorm:rms", hidden_states, l.input_layernorm.weight, eps=rms_norm_eps)
+            q = OP('q_proj:fc', input_layernorm, l.self_attn.q_proj.weight, l.self_attn.q_proj.bias)
+            k = OP('k_proj:fc', input_layernorm, l.self_attn.q_proj.weight, l.self_attn.q_proj.bias)
+            v = OP('v_proj:fc', input_layernorm, l.self_attn.q_proj.weight, l.self_attn.q_proj.bias)
+            newq = OP('mha', q, k, v, kv_cache, inv_freq)
+            attn_output = OP('self_attn.o_proj:fc', newq, l.self_attn.o_proj.weight, l.self_attn.o_proj.bias)
+            attn_output = hidden_states + attn_output
+            post_attention_layernorm = OP('post_attention_layernorm:rms', attn_output, l.post_attention_layernorm.weight, eps=rms_norm_eps)
+
+            def mlp(states):
+                gate_proj = OP('mlp.gate_proj:fc', states, l.mlp.gate_proj.weight, l.mlp.gate_proj.bias)
+                silu = OP("silu", gate_proj)
+                up_proj = OP('mlp.up_proj:fc', states, l.mlp.up_proj.weight, l.mlp.up_proj.bias)
+                mul = silu * up_proj
+                down_proj = OP('mlp.down_proj:fc', mul, l.mlp.down_proj.weight,l.mlp.down_proj.bias)
+                return down_proj
+
+            mlp_output = mlp(post_attention_layernorm)
+            hidden_states = attn_output + mlp_output
+
+        final_layernorm = OP('model.norm:rms',
+                             hidden_states,
+                             hf_model.model.norm.weight,
+                             eps=rms_norm_eps)
+        logits = OP('lm_head:fc', final_layernorm, hf_model.lm_head.weight, hf_model.lm_head.bias)
+        print(logits)
+
+
+    def llmops_embedding(self, input_ids, weight):
+        # return F.embedding(input_ids, weight)
+        inputs_embeds = llmops.embedding(llmops.tensor(input_ids.numpy()), llmops.tensor(weight.numpy()))
+        return torch.from_numpy(numpy.array(inputs_embeds, copy=False))
+
+    def llmops_rmsnorm(self, input, weight, variance_epsilon):
+        # variance = input.pow(2).mean(-1, keepdim=True)
+        # input = input * torch.rsqrt(variance + variance_epsilon)
+        # return weight * input.to(input_dtype)
+        input_layernorm = llmops.rmsnorm(llmops.tensor(input.numpy()), llmops.tensor(weight.numpy()), variance_epsilon)
+        return torch.from_numpy(numpy.array(input_layernorm, copy=False))
 
     def forward(self, input_ids, kv_cache):
         op_dict = self.op_dict
-        inputs_embeds = op_dict['model.embed_tokens'](input_ids)
-        hidden_states = inputs_embeds
+        hidden_states = self.llmops_embedding(input_ids, op_dict['model.embed_tokens'].weight)
+
         for i, ops in enumerate(op_dict['layers']):
-            input_layernorm = ops['input_layernorm'](hidden_states)
-            q = ops['self_attn.q_proj'](input_layernorm)
-            k = ops['self_attn.k_proj'](input_layernorm)
-            v = ops['self_attn.v_proj'](input_layernorm)
-            newq = ops["self_attn.mha"](q, k, v, kv_cache, self.inv_freq)
+            input_layernorm = self.llmops_rmsnorm(hidden_states, ops['input_layernorm'].weight, ops['input_layernorm'].variance_epsilon)
+
+            q = ops['self_attn.q_proj'](input_layernorm)    # q:[batch, seq_len, hiden_states]
+            k = ops['self_attn.k_proj'](input_layernorm)    # k:[batch, seq_len, hiden_states]
+            v = ops['self_attn.v_proj'](input_layernorm)    # v:[batch, seq_len, hiden_states] 
+            newq = ops["self_attn.mha"](q, k, v, kv_cache, self.inv_freq) # v:[batch, seq_len, hiden_states] 
             attn_output = ops['self_attn.o_proj'](newq)
 
             attn_output = hidden_states + attn_output
@@ -498,6 +552,7 @@ def main():
     parser.add_argument('--sys', type=str, default=None)
     parser.add_argument('--kv-len', type=int, default=2048)
     parser.add_argument('-v', '--verbose', action="store_true")
+    parser.add_argument('-d', '--device', default="cpu")
     parser.add_argument('prompt', type=str, nargs='?')
     
     args = parser.parse_args()
@@ -514,5 +569,8 @@ def main():
 
     print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
     print(model)
+
+    print(f"to device {args.device} ... ")
+    model.to(args.device)
 
     simple_chat_pipeline(model, args.prompt, args.kv_len, args.sys, args.verbose)

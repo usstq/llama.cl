@@ -42,16 +42,30 @@ print("")
 print(f"extra_link_args = {extra_link_args}")
 print("\033[00m")
 
-setup(name='chatllama',
-      version='0.0.1',
-      packages=['chatllama'],
-      ext_modules=[
-        cpp_extension.CppExtension(
+
+c_ext = cpp_extension.CppExtension(
                 name = 'chatllama.c_ext',
                 sources=['ext/llama_ext.cpp'],
                 extra_compile_args = extra_compile_args,
                 extra_link_args = extra_link_args
-                )],
+                )
+
+print(c_ext)
+print(f"\tinclude_dirs={c_ext.include_dirs}")
+print(f"\tlibraries={c_ext.libraries}")
+print(f"\tlibraries={c_ext.library_dirs}")
+print(f"\tlibraries={c_ext.runtime_library_dirs}")
+print(f"\tlibraries={c_ext.sources}")
+print(f"\tlibraries={c_ext.depends}")
+print(f"\tlibraries={c_ext.extra_compile_args}")
+print(f"\tlibraries={c_ext.extra_link_args}")
+print(f"\tlibraries={c_ext.extra_objects}")
+
+
+setup(name='chatllama',
+      version='0.0.1',
+      packages=['chatllama'],
+      ext_modules=[c_ext],
       cmdclass={'build_ext': cpp_extension.BuildExtension},
       install_requires=[
         'torch>=2.0.1',

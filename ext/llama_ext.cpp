@@ -399,6 +399,9 @@ struct q4_1_block
     }
 };
 
+
+
+
 torch::Tensor FC_quant_Q4A(torch::Tensor tweight)
 {
     // raw weight input is NxK (transpose_b is true)
@@ -602,6 +605,30 @@ torch::Tensor FC_evaluate_Q4A(torch::Tensor tinput, torch::Tensor tweight, int N
     return toutput;
 }
 
+struct FCQ4A {
+    torch::Tensor _weight;
+    int _N;
+    FCQ4A(torch::Tensor tweight) {
+        _N = tweight.size(0);
+        _weight = FC_quant_Q4A(tweight);
+    }
+    torch::Tensor forward(torch::Tensor input) {
+        return FC_evaluate_Q4A(input, _weight, _N);
+    }
+    std::string to_string() const
+    {
+      std::ostringstream out;
+      out << "FCQ4A(";
+      out << ")";
+      return out.str();
+    }
+};
+
+using Ktensorf32 = Ktensor<float>;
+
+void test(const Ktensorf32 & t) {
+    std::cout << "test" << t << std::endl;
+}
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 {
@@ -610,4 +637,18 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)
 
     m.def("FC_quant_Q4A", &FC_quant_Q4A, "FC_quant_Q4A");
     m.def("FC_evaluate_Q4A", &FC_evaluate_Q4A, "FC_evaluate_Q4A");
+
+    py::class_<Ktensorf32>(m, "Ktensorf32")
+        .def(py::init<at::Tensor>());
+
+    m.def("test", &test);
+    //m.def("test", [](torch::Tensor t){
+    //    test(t);
+    //});
+    py::class_<FCQ4A>(m, "FCQ4A", py::dynamic_attr())
+        .def(py::init<torch::Tensor>())
+        .def_readwrite("_weight", &FCQ4A::_weight)
+        .def_readwrite("_N", &FCQ4A::_N)
+        .def("forward", &FCQ4A::forward)
+        .def("__repr__", &FCQ4A::to_string);
 }
