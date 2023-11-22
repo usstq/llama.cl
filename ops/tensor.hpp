@@ -18,6 +18,12 @@ static inline void throw_rt_error(Args&&... args) {
   throw std::runtime_error(ss.str());
 }
 
+#define ASSERT(condition)                                                     \
+  if (!(condition)) {                                                         \
+    throw_rt_error("assert", #condition, "failed at" __FILE__, ":", __LINE__, \
+                   "  ");                                                     \
+  }
+
 struct tensor {
   std::shared_ptr<void> m_ptr;
   int64_t m_shape[8];
@@ -213,9 +219,9 @@ struct tensor {
       sz *= m_shape[i];
     return sz;
   }
-  int64_t size(int i) const { 
+  int64_t size(int i) const {
     if (i < 0) {
-        i += m_rank;
+      i += m_rank;
     }
     return m_shape[i];
   }
@@ -228,9 +234,14 @@ struct tensor {
   }
   int64_t item_size() const { return m_item_size; }
   std::type_info* tinfo() const { return m_p_tinfo; }
+
   template <typename T>
-  bool is() const {
-    return m_p_tinfo == &typeid(T);
+  bool is(int rank = -1) const {
+    if (m_p_tinfo != &typeid(T))
+      return false;
+    if (rank >= 0 && rank != m_rank)
+      return false;
+    return true;
   }
 
   std::vector<int64_t> shape() const {

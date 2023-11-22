@@ -3,12 +3,54 @@
 #include <iostream>
 #include "tensor.hpp"
 
+#ifdef _WIN32
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+
+static inline float _mm256_reduce_add_ps(const __m256 x) {
+  __m128 res = _mm256_extractf128_ps(x, 1);
+  res = _mm_add_ps(res, _mm256_castps256_ps128(x));
+  res = _mm_add_ps(res, _mm_movehl_ps(res, res));
+  res = _mm_add_ss(res, _mm_movehdup_ps(res));
+  return _mm_cvtss_f32(res);
+}
+
+#include <omp.h>
+inline int64_t divup(int64_t x, int64_t y) {
+  return (x + y - 1) / y;
+}
+
+template <typename F>
+inline void parallel_nt(int64_t begin,
+                        int64_t end,
+                        int64_t grain_size,
+                        const F& f) {
+#pragma omp parallel
+  {
+    // choose number of tasks based on grain size and number of threads
+    // can't use num_threads clause due to bugs in GOMP's thread pool (See
+    // #32008)
+    int64_t num_threads = omp_get_num_threads();
+    if (grain_size > 0) {
+      num_threads = std::min(num_threads, divup((end - begin), grain_size));
+    }
+
+    int64_t tid = omp_get_thread_num();
+    int64_t chunk_size = divup((end - begin), num_threads);
+    int64_t begin_tid = begin + tid * chunk_size;
+    if (begin_tid < end) {
+      f(begin_tid, std::min(end, chunk_size + begin_tid));
+    }
+  }
+}
+
 // https://pytorch.org/docs/stable/generated/torch.nn.functional.embedding.html
-tensor embedding(tensor input,  // [batch0, batch0, ... ]
-                 tensor weight  // [vocab_size, embedding_dim]
-) {
-  assert(weight.is<float>());
-  assert(input.is<int64_t>());
+tensor embedding(tensor input, tensor weight) {
+  ASSERT(input.is<int64_t>());
+  ASSERT(weight.is<float>(2));
+
   auto vocab_size = weight.size(0);
   auto embedding_dim = weight.size(1);
 
@@ -23,44 +65,27 @@ tensor embedding(tensor input,  // [batch0, batch0, ... ]
   output.reset<float>(nullptr, oshape);
   auto* src = input.data<int64_t>();
   auto* dst = output.data<float>();
-#pragma omp parallel for
-  for (int64_t i = 0; i < input.size(); i++) {
-    auto index = src[i];
-    memcpy(dst + i * embedding_dim, &weight.at<float>({index, 0}),
-           embedding_dim * weight.item_size());
-  }
+  parallel_nt(0, input.size(), 0, [&](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; i++) {
+      auto index = src[i];
+      memcpy(dst + i * embedding_dim, &weight.at<float>({index, 0}),
+             embedding_dim * weight.item_size());
+    }
+  });
   return output;
 }
 
-/*
-class OP_rms_norm:
-    def __init__(self, weight, variance_epsilon) -> None:
-        self.weight = torch.clone(weight)
-        self.variance_epsilon = variance_epsilon
-        pass
+// https://github.com/huggingface/transformers/blob/c5be38cd27bee92be73c73ba09aec8bedf841423/src/transformers/models/llama/modeling_llama.py#L105
+// https://arxiv.org/pdf/1910.07467.pdf
+tensor rmsnorm(tensor input, tensor weight, float variance_epsilon) {
+  ASSERT(input.is<float>(3));   // [batch0, seq_len, hidden_states]
+  ASSERT(weight.is<float>(1));  // [hidden_states]
 
-    def __call__(self, input):
-        input_dtype = input.dtype
-        input = input.to(torch.float32)
-        variance = input.pow(2).mean(-1, keepdim=True)
-        input = input * torch.rsqrt(variance + self.variance_epsilon)
-        return self.weight * input.to(input_dtype)
-
-    def __repr__(self):
-        return f"OP_rms_norm(weight: {self.weight.shape}{self.weight.dtype},
-esp:{self.variance_epsilon})"
-*/
-tensor rmsnorm(tensor input,   // [batch0, seq_len, hidden_states]
-               tensor weight,  // [hidden_states]
-               float variance_epsilon) {
-  assert(input.is<float>());
-  assert(weight.is<float>());
-  assert(input.rank() == 3);
-  assert(weight.rank() == 1);
   auto batch = input.size(0);
   auto seq_len = input.size(1);
   auto hidden_states = weight.size(0);
-  assert(input.size(-1) == hidden_states);
+  ASSERT(input.size(-1) == hidden_states);
+  ASSERT(hidden_states % 8 == 0);
 
   tensor output;
   auto oshape = input.shape();
@@ -69,22 +94,32 @@ tensor rmsnorm(tensor input,   // [batch0, seq_len, hidden_states]
   auto* wei = weight.data<float>();
   auto rank = input.rank();
   auto batch_size = input.size() / hidden_states;
-#pragma omp parallel for
-  for (int64_t bs = 0; bs < batch_size; bs++) {
-    auto b = (bs / seq_len);
-    auto s = (bs % seq_len);
-    auto* src = &input.at<float>({b, s, 0});
-    auto* dst = &output.at<float>({b, s, 0});
-    float rms = 0;
-    for (int i = 0; i < hidden_states; i++) {
-      rms += src[i] * src[i];
+  parallel_nt(0, batch_size, 0, [&](int64_t bs0, int64_t bs1) {
+    for (int64_t bs = bs0; bs < bs1; bs++) {
+      auto b = (bs / seq_len);
+      auto s = (bs % seq_len);
+      auto* src = &input.at<float>({b, s, 0});
+      auto* dst = &output.at<float>({b, s, 0});
+      // float rms = 0;
+      auto vrms = _mm256_setzero_ps();
+      for (int i = 0; i < hidden_states; i += 8) {
+        // rms += src[i] * src[i];
+        auto v0 = _mm256_loadu_ps(src + i);
+        vrms = _mm256_fmadd_ps(v0, v0, vrms);
+      }
+      auto rms = _mm256_reduce_add_ps(vrms) / hidden_states;
+      auto rsqrt_rms = _mm256_set1_ps(1.0f / std::sqrt(rms + variance_epsilon));
+
+      for (int i = 0; i < hidden_states; i += 8) {
+        // dst[i] = src[i] * rsqrt_rms * wei[i];
+        auto v0 = _mm256_loadu_ps(src + i);
+        auto w0 = _mm256_loadu_ps(wei + i);
+        v0 = _mm256_mul_ps(v0, rsqrt_rms);
+        v0 = _mm256_mul_ps(v0, w0);
+        _mm256_storeu_ps(dst + i, v0);
+      }
     }
-    rms = rms / hidden_states;
-    auto rsqrt_rms = 1.0f / std::sqrt(rms + variance_epsilon);
-    for (int i = 0; i < hidden_states; i++) {
-      dst[i] = src[i] * rsqrt_rms * wei[i];
-    }
-  }
+  });
   return output;
 }
 
