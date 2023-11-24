@@ -25,6 +25,54 @@ static inline void throw_rt_error(Args&&... args) {
   }
 
 struct tensor {
+  // coordinates inside tensor
+  struct indices {
+    tensor& t;
+    int64_t index[8] = {0};
+    bool overflow = false;
+    indices(tensor& t) : t(t) {}
+
+    int64_t& operator[](int64_t i) { return index[i]; }
+    int rank() { return t.rank(); }
+
+    int64_t move_to(int64_t index_flatten_1d) {
+      for (auto r = t.rank() - 1; r >= 0; r--) {
+        auto sz = t.size(r);
+        index[r] = index_flatten_1d % sz;
+        index_flatten_1d /= sz;
+      }
+      return index_flatten_1d;
+    }
+
+    // can only move_forward
+    indices& operator+=(int64_t delta) {
+      int64_t carry = delta;
+      int64_t offset = 0;
+      for (auto r = t.rank() - 1; r >= 0; r--) {
+        if (carry > 0) {
+          auto cur = index[r] + carry;
+          auto sz = t.size(r);
+          carry = 0;
+          while (cur >= sz) {
+            cur -= sz;
+            carry++;
+          }
+          index[r] = cur;
+        }
+        offset = index[r] * t.stride(r);
+      }
+      if (carry)
+        overflow = true;
+      return *this;
+    }
+  };
+
+  indices get_indices(int64_t index_flatten_1d) {
+    indices idx(*this);
+    idx.move_to(index_flatten_1d);
+    return idx;
+  }
+
   std::shared_ptr<void> m_ptr;
   int64_t m_shape[8];
   int64_t m_strides[8];
@@ -55,7 +103,7 @@ struct tensor {
     }
   }
 
-  template <typename I>
+  template <typename I = int64_t>
   void reset(void* ptr,
              const std::type_info& tinfo,
              const std::vector<I>& dims,
@@ -91,6 +139,11 @@ struct tensor {
       total_cnt *= (*it);
       m_rank++;
     }
+    if (total_cnt == 0) {
+      m_ptr.reset();
+      return;
+    }
+
     if (bytes_strides.empty()) {
       _generate_dense_strides();
     } else {
@@ -114,28 +167,11 @@ struct tensor {
     }
   }
 
-  template <typename T, typename I>
+  template <typename T, typename I = int64_t>
   void reset(T* ptr,
              const std::vector<I>& dims,
              const std::vector<I>& bytes_strides = {}) {
     reset(ptr, typeid(T), dims, bytes_strides);
-  }
-
-  tensor clone() const {
-    tensor newt;
-    // allocate dense memory
-    newt.reset(nullptr, *m_p_tinfo, shape());
-    // copy data
-    auto d_rank = dense_rank();
-    if (d_rank == m_rank) {
-      memcpy(newt.data(), data(), size() * m_item_size);
-    } else {
-      throw_rt_error("clone only supprt dense tensor for now.");
-      // reduce dense rank into one
-      // int64_t dense_block_size = m_item_size *((d_rank == 0) ? 1 :
-      // m_strides[m_rank - 1 - d_rank]);
-    }
-    return newt;
   }
 
   tensor permute(const std::vector<size_t>& order) const {
@@ -171,6 +207,24 @@ struct tensor {
 
   bool is_dense() const { return dense_rank() == m_rank; }
 
+  // reshape current tensor so it is broadcast-able to t
+  tensor reshape_like(const tensor& t) const {
+    ASSERT(rank() <= t.rank());
+    std::vector<size_t> new_shape(t.rank(), 1);
+    for (int i = t.rank() - 1, j = rank() - 1; i >= 0; j--, i--) {
+      auto dst_dim = t.size(i);
+      auto src_dim = (j < 0) ? 1 : size(j);
+      if (src_dim == 1 || src_dim == dst_dim) {
+        // broadcast-able
+        new_shape[i] = src_dim;
+      } else {
+        throw_rt_error("reshape_like failed : src_dim", src_dim,
+                       "cannot broadcast to", dst_dim);
+      }
+    }
+    return reshape(new_shape);
+  }
+
   tensor reshape(const std::vector<size_t>& target_shape) const {
     if (!is_dense())
       throw_rt_error("tensor reshape only support dense layout.");
@@ -179,12 +233,13 @@ struct tensor {
     int64_t total_cnt = 1;
     for (auto s : target_shape)
       total_cnt *= s;
-    if (total_cnt != size())
+    if (total_cnt != numel())
       throw_rt_error("tensor reshape to inconsistent element count");
     newtv.m_rank = target_shape.size();
     for (int i = 0; i < target_shape.size(); i++)
       newtv.m_shape[i] = target_shape[i];
-    newtv._generate_dense_strides();
+    newtv._generate_dense_strides();  // since current tensor is dense, we can
+                                      // regenerate strides
     return newtv;
   }
 
@@ -213,7 +268,7 @@ struct tensor {
     return sub_tensor;
   }
 
-  int64_t size() const {
+  int64_t numel() const {
     int64_t sz = 1;
     for (int i = 0; i < m_rank; i++)
       sz *= m_shape[i];
@@ -273,7 +328,24 @@ struct tensor {
       off += m_strides[i] * coordinate;
     }
 
-    return reinterpret_cast<T*>(m_ptr.get())[off];
+    return *reinterpret_cast<T*>(reinterpret_cast<int8_t*>(m_ptr.get()) +
+                                 off * m_item_size);
+  }
+  template <typename T>
+  T& at(const indices& idx, bool allow_broadcast = false) const {
+    size_t off = m_offset;
+    for (int64_t i = m_rank - 1, j = idx.rank() - 1; i >= 0; i--, j--) {
+      size_t coordinate = (j >= 0) ? idx[j] : 0;
+      if (allow_broadcast && m_shape[i] == 1) {
+        // allow_broadcast only works when the dimension is really 1
+        coordinate = 0;
+      } else {
+        assert(coordinate < m_shape[i]);
+      }
+      off += m_strides[i] * coordinate;
+    }
+    return *reinterpret_cast<T*>(reinterpret_cast<int8_t*>(m_ptr.get()) +
+                                 off * m_item_size);
   }
 
 #if 0
@@ -409,9 +481,11 @@ struct tensor {
     }
     ss << "] " << m_p_tinfo->name() << " item_size=" << m_item_size << "\n";
     if (m_p_tinfo == &typeid(float))
-      print_subtensor<float>(
-          ss, reinterpret_cast<const float*>(m_ptr.get()) + m_offset,
-          &m_shape[0], &m_strides[0], m_rank, 0);
+      print_subtensor<float>(ss, data<float>(), &m_shape[0], &m_strides[0],
+                             m_rank, 0);
+    if (m_p_tinfo == &typeid(int8_t))
+      print_subtensor<int8_t>(ss, data<int8_t>(), &m_shape[0], &m_strides[0],
+                              m_rank, 0);
     return ss.str();
   }
 

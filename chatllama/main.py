@@ -16,7 +16,7 @@ from . import c_ext
 from transformers import AutoTokenizer, TextStreamer
 
 current_file_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.append("C:/Users/tingqian/Syncplicity/LTQ/Code/llama.cl/ops/build/Debug/")
+sys.path.append("C:/Users/tingqian/Syncplicity/LTQ/Code/llama.cl/ops/build/Release/")
 
 import numpy
 import llmops
@@ -60,7 +60,7 @@ class OP_rms_norm:
 
 class OP_fc_f32:
     def __init__(self, weight, bias) -> None:
-        print(weight.shape)
+        print("OP_fc_f32", weight.shape)
         # weight.shape : [N, K]
         self.N = weight.shape[0]
         self.bias = torch.clone(bias) if bias is not None else bias
@@ -72,59 +72,6 @@ class OP_fc_f32:
 
     def __repr__(self):
         return f"OP_fc_f32(weight: {self.weight.shape}{self.weight.dtype}" + ")" if self.bias is None else f", bias: {self.bias.shape}{self.bias.dtype})"
-
-class OP_fc_q8c:
-    def __init__(self, weight, bias) -> None:
-        print(weight.shape)
-        # weight.shape : [N, K]
-        self.wq8c, self.wq8c_scales = c_ext.FC_quant_Q8C(weight)
-        self.N = weight.shape[0]
-        self.bias = torch.clone(bias) if bias is not None else bias
-        #self.weight = weight
-
-    def __call__(self, input):
-        assert(len(input.shape) == 3)
-        #return F.linear(input, self.weight, self.bias)
-        #print("==========", input.shape, self.wq8c.shape, self.wq8c_scales.shape, self.weight.shape, self.N)
-        output = c_ext.FC_evaluate_Q8C(input, self.wq8c, self.wq8c_scales, self.N)
-        if self.bias:
-            output += self.bias
-        return output # F.linear(input, self.weight, self.bias)
-
-    def __repr__(self):
-        return f"OP_fc_q8c(weight: {self.wq8c.shape}{self.wq8c.dtype}" + ")" if self.bias is None else f", bias: {self.bias.shape}{self.bias.dtype})"
-
-
-class OP_fc_q4a:
-    def __init__(self, weight, bias) -> None:
-        print(weight.shape)
-        # weight.shape : [N, K]
-        self.wq = c_ext.FC_quant_Q4A(weight)
-        self.N = weight.shape[0]
-        self.bias = torch.clone(bias) if bias is not None else bias
-        #self.weight = weight
-
-    def __call__(self, input):
-        assert(len(input.shape) == 3)
-        #return F.linear(input, self.weight, self.bias)
-        #print("==========", input.shape, self.wq8c.shape, self.wq8c_scales.shape, self.weight.shape, self.N)
-        output = c_ext.FC_evaluate_Q4A(input, self.wq, self.N)
-        if self.bias:
-            output += self.bias
-        return output # F.linear(input, self.weight, self.bias)
-
-    def __repr__(self):
-        return f"OP_fc_q4a(weight: {self.wq.shape}{self.wq.dtype}" + ")" if self.bias is None else f", bias: {self.bias.shape}{self.bias.dtype})"
-
-class OP_embedding:
-    def __init__(self, weight) -> None:
-        self.weight = torch.clone(weight)
-
-    def __call__(self, input):
-        return F.embedding(input, self.weight)
-
-    def __repr__(self):
-        return f"OP_embedding(weight: {self.weight.shape}{self.weight.dtype})"
 
 class KVCache:
     def __init__(self, configs, batch_size, max_kv_len, verbose) -> None:
@@ -281,6 +228,66 @@ class OP_mha:
 
     def __repr__(self):
         return f"OP_mha(layer_idx:{self.layer_idx}, hidden_size:{self.hidden_size}, rotary_dims:{self.rotary_dims}, num_heads:{self.num_heads}, head_dim:{self.head_dim})"
+
+
+#=================================================================
+# llmops based OP
+def to_lt(a):
+    if a is None:
+        return llmops.empty(0)
+    if type(a) is llmops.tensor:
+        return a
+    return llmops.tensor(a.detach().numpy())
+
+def to_torch(a):
+    return torch.from_numpy(numpy.array(a, copy=False))
+
+def llmop_iadd(a, b):
+    llmops.iadd(to_lt(a), to_lt(b))
+
+class llmop_fc_q4a(object):
+    def __init__(self, linear):
+        self.weight = llmops.offline_FC_quant_Q4A(to_lt(linear.weight))
+        self.bias = to_lt(linear.bias) if linear.bias else None
+        self.N = linear.weight.shape[0]
+    
+    def __call__(self, input):
+        out = llmops.fc_Q4A(to_lt(input), self.weight, self.N)
+        if self.bias:
+            llmops.iadd(out, self.bias)
+        return to_torch(out)
+
+    def __repr__(self):
+        return f"llmop_fc_q4a(weight: {self.weight.shape})"
+
+class llmop_rmsnorm(object):
+    def __init__(self, weight, variance_epsilon):
+        self.weight = llmops.clone(to_lt(weight))
+        self.eps = variance_epsilon
+
+    def __call__(self, input):
+        # variance = input.pow(2).mean(-1, keepdim=True)
+        # input = input * torch.rsqrt(variance + variance_epsilon)
+        # return weight * input.to(input_dtype)
+        llmops.rmsnorm(to_lt(input), self.weight, self.eps)
+
+    def __repr__(self):
+        return f"llmop_rmsnorm(weight: {self.weight.shape}, eps: {self.eps})"
+
+class llmop_embedding(object):
+    def __init__(self, weight):
+        self.weight = llmops.clone(to_lt(weight))
+
+    def __call__(self, input_ids):
+        # shape infer + output memory allocation are done explicitly as a separate step
+        output = torch.empty(*input_ids.shape, self.weight.shape[1])
+        # inference is done w/o shape-info
+        llmops.embedding(llmops.tensor(output.numpy()), llmops.tensor(input_ids.numpy()), self.weight)
+        return output
+
+    def __repr__(self):
+        return f"llmop_embedding(weight: {self.weight.shape})"
+
 #=================================================================
 # input_ids  : [batch, query_len]
 # kv_cache   : [2 * n_layers, batch, n_head, max_kv_len, head_size]
@@ -326,24 +333,28 @@ class Model(nn.Module):
             OP_fc = OP_fc_q8c
         if quant_type == 'q4a':
             OP_fc = OP_fc_q4a
+        
+        OP_fc = llmop_fc_q4a
+        OP_rmsnorm = llmop_rmsnorm
+        OP_embedding = llmop_embedding
 
         # the consts capture constant known at compile-time 
         self.op_dict = {
             'model.embed_tokens': OP_embedding(hf_model.model.embed_tokens.weight),
-            'model.norm': OP_rms_norm(hf_model.model.norm.weight, configs['rms_norm_eps']),
-            'lm_head': OP_fc(hf_model.lm_head.weight, hf_model.lm_head.bias),
+            'model.norm': OP_rmsnorm(hf_model.model.norm.weight, configs['rms_norm_eps']),
+            'lm_head': OP_fc(hf_model.lm_head),
             'layers': [
                 {
-                    'input_layernorm': OP_rms_norm(l.input_layernorm.weight, configs['rms_norm_eps']),
-                    'post_attention_layernorm': OP_rms_norm(l.post_attention_layernorm.weight, configs['rms_norm_eps']),
-                    'self_attn.q_proj': OP_fc(l.self_attn.q_proj.weight, l.self_attn.q_proj.bias),
-                    'self_attn.k_proj': OP_fc(l.self_attn.k_proj.weight, l.self_attn.k_proj.bias),
-                    'self_attn.v_proj': OP_fc(l.self_attn.v_proj.weight, l.self_attn.v_proj.bias),
+                    'input_layernorm': OP_rmsnorm(l.input_layernorm.weight, configs['rms_norm_eps']),
+                    'post_attention_layernorm': OP_rmsnorm(l.post_attention_layernorm.weight, configs['rms_norm_eps']),
+                    'self_attn.q_proj': OP_fc(l.self_attn.q_proj),
+                    'self_attn.k_proj': OP_fc(l.self_attn.k_proj),
+                    'self_attn.v_proj': OP_fc(l.self_attn.v_proj),
                     'self_attn.mha' : OP_mha(i, configs["rotary_dims"], configs["hidden_size"], configs["head_num"]),
-                    'self_attn.o_proj': OP_fc(l.self_attn.o_proj.weight, l.self_attn.o_proj.bias),
-                    'mlp.gate_proj': OP_fc(l.mlp.gate_proj.weight, l.mlp.gate_proj.bias),
-                    'mlp.up_proj': OP_fc(l.mlp.up_proj.weight, l.mlp.up_proj.bias),
-                    'mlp.down_proj': OP_fc(l.mlp.down_proj.weight,l.mlp.down_proj.bias),
+                    'self_attn.o_proj': OP_fc(l.self_attn.o_proj),
+                    'mlp.gate_proj': OP_fc(l.mlp.gate_proj),
+                    'mlp.up_proj': OP_fc(l.mlp.up_proj),
+                    'mlp.down_proj': OP_fc(l.mlp.down_proj),
                 } for i, l in enumerate(hf_model.model.layers)
             ],
         }
@@ -374,71 +385,26 @@ class Model(nn.Module):
         ret += json.dumps(self.op_dict, indent=4, default=str)
         return ret
 
-    def compute_graph_emitter(self, hf_model):
-        from . import opset
-        OP = opset.tensor
-        input_ids = OP("input_ids:parameter")
-        kv_cache = OP("kv_cache:parameter")
-        inputs_embeds = OP("embed", input_ids, hf_model.model.embed_tokens.weight)
-        hidden_states = inputs_embeds
-        inv_freq = OP.from_aten(self.inv_freq)
-        rms_norm_eps = hf_model.config.rms_norm_eps
-        for i, l in enumerate(hf_model.model.layers):
-            input_layernorm = OP("input_layernorm:rms", hidden_states, l.input_layernorm.weight, eps=rms_norm_eps)
-            q = OP('q_proj:fc', input_layernorm, l.self_attn.q_proj.weight, l.self_attn.q_proj.bias)
-            k = OP('k_proj:fc', input_layernorm, l.self_attn.q_proj.weight, l.self_attn.q_proj.bias)
-            v = OP('v_proj:fc', input_layernorm, l.self_attn.q_proj.weight, l.self_attn.q_proj.bias)
-            newq = OP('mha', q, k, v, kv_cache, inv_freq)
-            attn_output = OP('self_attn.o_proj:fc', newq, l.self_attn.o_proj.weight, l.self_attn.o_proj.bias)
-            attn_output = hidden_states + attn_output
-            post_attention_layernorm = OP('post_attention_layernorm:rms', attn_output, l.post_attention_layernorm.weight, eps=rms_norm_eps)
-
-            def mlp(states):
-                gate_proj = OP('mlp.gate_proj:fc', states, l.mlp.gate_proj.weight, l.mlp.gate_proj.bias)
-                silu = OP("silu", gate_proj)
-                up_proj = OP('mlp.up_proj:fc', states, l.mlp.up_proj.weight, l.mlp.up_proj.bias)
-                mul = silu * up_proj
-                down_proj = OP('mlp.down_proj:fc', mul, l.mlp.down_proj.weight,l.mlp.down_proj.bias)
-                return down_proj
-
-            mlp_output = mlp(post_attention_layernorm)
-            hidden_states = attn_output + mlp_output
-
-        final_layernorm = OP('model.norm:rms',
-                             hidden_states,
-                             hf_model.model.norm.weight,
-                             eps=rms_norm_eps)
-        logits = OP('lm_head:fc', final_layernorm, hf_model.lm_head.weight, hf_model.lm_head.bias)
-        print(logits)
-
-
-    def llmops_embedding(self, input_ids, weight):
-        # return F.embedding(input_ids, weight)
-        inputs_embeds = llmops.embedding(llmops.tensor(input_ids.numpy()), llmops.tensor(weight.numpy()))
-        return torch.from_numpy(numpy.array(inputs_embeds, copy=False))
-
-    def llmops_rmsnorm(self, input, weight, variance_epsilon):
-        # variance = input.pow(2).mean(-1, keepdim=True)
-        # input = input * torch.rsqrt(variance + variance_epsilon)
-        # return weight * input.to(input_dtype)
-        input_layernorm = llmops.rmsnorm(llmops.tensor(input.numpy()), llmops.tensor(weight.numpy()), variance_epsilon)
-        return torch.from_numpy(numpy.array(input_layernorm, copy=False))
-
     def forward(self, input_ids, kv_cache):
         op_dict = self.op_dict
-        hidden_states = self.llmops_embedding(input_ids, op_dict['model.embed_tokens'].weight)
+
+        hidden_states = op_dict['model.embed_tokens'](input_ids)
 
         for i, ops in enumerate(op_dict['layers']):
-            input_layernorm = self.llmops_rmsnorm(hidden_states, ops['input_layernorm'].weight, ops['input_layernorm'].variance_epsilon)
+            input_layernorm = hidden_states.clone()
+            ops['input_layernorm'](input_layernorm)
 
-            q = ops['self_attn.q_proj'](input_layernorm)    # q:[batch, seq_len, hiden_states]
-            k = ops['self_attn.k_proj'](input_layernorm)    # k:[batch, seq_len, hiden_states]
-            v = ops['self_attn.v_proj'](input_layernorm)    # v:[batch, seq_len, hiden_states] 
-            newq = ops["self_attn.mha"](q, k, v, kv_cache, self.inv_freq) # v:[batch, seq_len, hiden_states] 
+            q = ops['self_attn.q_proj'](input_layernorm)
+            k = ops['self_attn.k_proj'](input_layernorm)
+            v = ops['self_attn.v_proj'](input_layernorm)
+            # q/k/v:[batch, seq_len, hiden_states]
+            newq = ops["self_attn.mha"](q, k, v, kv_cache, self.inv_freq)
             attn_output = ops['self_attn.o_proj'](newq)
 
-            attn_output = hidden_states + attn_output
-            post_attention_layernorm = ops['post_attention_layernorm'](attn_output)
+            llmop_iadd(attn_output, hidden_states)
+
+            post_attention_layernorm = attn_output.clone()
+            ops['post_attention_layernorm'](post_attention_layernorm)
 
             def mlp(states):
                 gate_proj = ops['mlp.gate_proj'](states)
@@ -448,11 +414,13 @@ class Model(nn.Module):
                 down_proj = ops['mlp.down_proj'](mul)
                 return down_proj
 
-            mlp_output = mlp(post_attention_layernorm)
-            hidden_states = attn_output + mlp_output
+            hidden_states = mlp(post_attention_layernorm)
+
+            llmop_iadd(hidden_states, attn_output)
             
-        final_layernorm = op_dict['model.norm'](hidden_states)
-        logits = op_dict['lm_head'](final_layernorm)
+        op_dict['model.norm'](hidden_states)
+
+        logits = op_dict['lm_head'](hidden_states)    # q:[batch, seq_len, hiden_states]
         return logits
 
 #=================================================================
@@ -571,6 +539,6 @@ def main():
     print(model)
 
     print(f"to device {args.device} ... ")
-    model.to(args.device)
+    #model.to(args.device)
 
     simple_chat_pipeline(model, args.prompt, args.kv_len, args.sys, args.verbose)
