@@ -64,10 +64,8 @@ def test_fc():
         print(f" {b0_bytesize/(1024**2):.1f} MB {dt*1e3:.1f} ms  {b0_bytesize/(1024**3)/dt:.1f} GB/s")
 
 
-test_fc()
-sys.exit(0)
-
 def test_tensor():
+    import psutil
     class C(object):
         def __getitem__(self, val):
             print(type(val), val)
@@ -79,11 +77,37 @@ def test_tensor():
     a = llmops.empty(1,2,3,4)
     print(f"a.shape={a.shape} a.strides={a.strides} a.item_size={a.item_size} a.data={hex(a.data)}")
 
+    
     na = numpy.array(a, copy=False)
     print(na)
+    nb = a.numpy()
+    print(nb)
     na[0,0] = 1
     print("============")
     print(na)
     print("============")
     print(a)
 
+    print(f"rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MB")
+    a = llmops.ones(1024, 1024, 512)
+    print(f"rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MB")
+    nb = a.numpy()
+    print(f"rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MB")
+    del a
+    print(f"rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MB")
+    del nb
+    print(f"rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MB")
+
+
+    import pickle
+    a = llmops.ones(3, 8)
+    print(a)
+    with open("_temp_test_tensor.pkl", 'wb') as f:
+        pickle.dump({"a": a}, f)
+    with open("_temp_test_tensor.pkl", 'rb') as f:
+        di = pickle.load(f)
+        print(di, di['a'])
+
+test_tensor()
+#test_fc()
+sys.exit(0)

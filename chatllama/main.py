@@ -240,7 +240,7 @@ def to_lt(a):
     return llmops.tensor(a.detach().numpy())
 
 def to_torch(a):
-    return torch.from_numpy(numpy.array(a, copy=False))
+    return torch.from_numpy(a.numpy())
 
 def llmop_iadd(a, b):
     llmops.iadd(to_lt(a), to_lt(b))

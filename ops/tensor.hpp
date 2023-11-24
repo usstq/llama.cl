@@ -288,6 +288,7 @@ struct tensor {
                                 m_offset * m_item_size);
   }
   int64_t item_size() const { return m_item_size; }
+  int64_t byte_size() const { return m_item_size * numel(); }
   std::type_info* tinfo() const { return m_p_tinfo; }
 
   template <typename T>
@@ -299,11 +300,31 @@ struct tensor {
     return true;
   }
 
-  std::vector<int64_t> shape() const {
-    return std::vector<int64_t>(m_shape, m_shape + m_rank);
+  template <typename ST = int64_t>
+  std::vector<ST> shape() const {
+    return std::vector<ST>(m_shape, m_shape + m_rank);
   }
-  std::vector<int64_t> strides() const {
-    return std::vector<int64_t>(m_strides, m_strides + m_rank);
+  template <typename ST = int64_t>
+  std::vector<ST> strides() const {
+    return std::vector<ST>(m_strides, m_strides + m_rank);
+  }
+  template <typename ST = int64_t>
+  std::vector<ST> byte_strides() const {
+    std::vector<ST> bstrides(m_rank);
+    for (int i = 0; i < m_rank; i++) {
+      bstrides[i] = m_strides[i] * m_item_size;
+    }
+    return bstrides;
+  }
+
+  template <typename T>
+  tensor& operator=(T v) {
+    ASSERT(is_dense());
+    auto* ptr = data<T>();
+    auto n = numel();
+    for (int64_t i = 0; i < n; i++)
+      ptr[i] = v;
+    return *this;
   }
 
   template <typename T>
