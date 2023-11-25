@@ -59,12 +59,10 @@ class OP_rms_norm:
         return f"OP_rms_norm(weight: {self.weight.shape}{self.weight.dtype}, esp:{self.variance_epsilon})"
 
 class OP_fc_f32:
-    def __init__(self, weight, bias) -> None:
-        print("OP_fc_f32", weight.shape)
+    def __init__(self, linear) -> None:
         # weight.shape : [N, K]
-        self.N = weight.shape[0]
-        self.bias = torch.clone(bias) if bias is not None else bias
-        self.weight = weight
+        self.bias = torch.clone(linear.bias) if linear.bias else None
+        self.weight = torch.clone(linear.weight)
 
     def __call__(self, input):
         assert(len(input.shape) == 3)
@@ -198,8 +196,19 @@ class OP_mha:
         rope_embedd(key_states)
 
         # kv_cache is a circular buffer, and tokens should be overwritten in word boundary
+        # key_states, value_states = kv_cache.update_cache(self.layer_idx, key_states, value_states)
+        #
+        #  cache: [num_layers*2, B, H, length_max, S]
+        #  slots: [q_len]   where ith query token should be placed cache
+        #  
+        #
+        for k in range(q_len):
+            kv_cache.cache[2*self.layer_idx + 0, :, :, kv_cache.slots[k], :] = key_states[:, :, k, :]
+            kv_cache.cache[2*self.layer_idx + 1, :, :, kv_cache.slots[k], :] = value_states[:, :, k, :]
 
-        key_states, value_states = kv_cache.update_cache(self.layer_idx, key_states, value_states)
+        # us beam_idx to gather(reorder kv cache), skipped in greedy case
+        key_states = kv_cache.cache[2*self.layer_idx + 0, :, :, :kv_cache.cur_kv_len, :]
+        value_states = kv_cache.cache[2*self.layer_idx + 1, :, :, :kv_cache.cur_kv_len, :]
 
         #kv_seq_len = kv_cache.cur_kv_len
         #kv_mask = kv_cache.mask[:kv_seq_len]
@@ -216,8 +225,16 @@ class OP_mha:
         #    q-token[k] can use all kv-tokens except the last (q_len - 1 - k)
         #    ....
         # [batch, num_heads, q_len ,kv_len] 
+
+        #if self.layer_idx == 0:
+        #    print(f"==={kv_cache.slots}")
+
         for k in range(q_len-1):
             pos = torch.arange(start=(k + 1), end=q_len, step=1, dtype = torch.int32)
+            pos = kv_cache.slots[pos]
+
+            if self.layer_idx == 0:
+                print(f"k={k} pos={pos}")
             attn_weights[:, :, k, pos] = torch.finfo(torch.float32).min
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -230,8 +247,18 @@ class OP_mha:
         return f"OP_mha(layer_idx:{self.layer_idx}, hidden_size:{self.hidden_size}, rotary_dims:{self.rotary_dims}, num_heads:{self.num_heads}, head_dim:{self.head_dim})"
 
 
-#=================================================================
-# llmops based OP
+#=========================================================================
+# llmops provide functional kernels which are computational intensive,
+# following python wrapper run on CPU will provide additional functions
+# based on them:
+#   - shape inference
+#   - tensor memory management (constant weight & activations)
+#   - kv-cache allocation & management
+#
+# these wrappers are also easy to manually re-implement in C++ for python-free
+# deployment (they can be implemented in C++ class with same function and API
+# with minimal effort). but python wrapper is best choice at developing stage.
+#
 def to_lt(a):
     if a is None:
         return llmops.empty(0)
@@ -244,6 +271,12 @@ def to_torch(a):
 
 def llmop_iadd(a, b):
     llmops.iadd(to_lt(a), to_lt(b))
+
+def llmop_imul(a, b):
+    llmops.imul(to_lt(a), to_lt(b))
+
+def llmop_trans(a, opname):
+    llmops.itrans(to_lt(a), opname)
 
 class llmop_fc_q4a(object):
     def __init__(self, linear):
@@ -287,6 +320,7 @@ class llmop_embedding(object):
 
     def __repr__(self):
         return f"llmop_embedding(weight: {self.weight.shape})"
+
 
 #=================================================================
 # input_ids  : [batch, query_len]
@@ -385,6 +419,12 @@ class Model(nn.Module):
         ret += json.dumps(self.op_dict, indent=4, default=str)
         return ret
 
+    # kv cache is not part of the model since it:
+    #  - has non-const big tensor
+    #  - is per session instead of per-model
+    # it manages per-session resources, thus it's part of pipeline
+    # and the best way to pass such resource into pipeline is inputs
+    # we should set it as inputs instead of object
     def forward(self, input_ids, kv_cache):
         op_dict = self.op_dict
 
@@ -407,11 +447,13 @@ class Model(nn.Module):
             ops['post_attention_layernorm'](post_attention_layernorm)
 
             def mlp(states):
-                gate_proj = ops['mlp.gate_proj'](states)
-                silu = F.silu(gate_proj)
+                # GLU_silu is used for up_projection
+                gate = ops['mlp.gate_proj'](states)
+                llmop_trans(gate, "silu")
                 up_proj = ops['mlp.up_proj'](states)
-                mul = silu * up_proj
-                down_proj = ops['mlp.down_proj'](mul)
+                llmop_imul(up_proj, gate)
+                # down projection
+                down_proj = ops['mlp.down_proj'](up_proj)
                 return down_proj
 
             hidden_states = mlp(post_attention_layernorm)

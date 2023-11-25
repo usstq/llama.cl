@@ -1,8 +1,8 @@
 #pragma once
 
+#include <stdint.h>
 #include "tensor.hpp"
 #include "utils.hpp"
-#include <stdint.h>
 
 tensor clone(tensor& old) {
   tensor newt;
@@ -45,6 +45,65 @@ void iadd(tensor a, tensor b) {
       }
     }
   });
+}
+
+// inplace add : a += b (with optinal broadcast)
+// useful to represent bias/residual/...
+void imul(tensor a, tensor b) {
+  ASSERT(a.is<float>());
+  ASSERT(b.is<float>(1) || b.is<float>(a.rank()));  // rank-1 b is most useful
+  ASSERT(b.size(-1) == a.size(-1));
+
+  if (b.rank() == a.rank()) {
+    ASSERT(b.shape() == a.shape());
+  }
+
+  // kernel on inner-most dimension
+  auto inner_dim = a.size(-1);
+  ASSERT((inner_dim % 8) == 0);
+  parallel_nt(0, (a.numel() / inner_dim), 0, [&](int64_t i0, int64_t i1) {
+    for (auto i = i0; i < i1; i++) {
+      auto* dst = a.data<float>() + (i * inner_dim);
+      auto* src = b.data<float>() + ((b.rank() == 1) ? 0 : (i * inner_dim));
+      for (int64_t i = 0; i < inner_dim; i += 8) {
+        auto v0 = _mm256_loadu_ps(src + i);
+        auto v1 = _mm256_loadu_ps(dst + i);
+        v1 = _mm256_mul_ps(v1, v0);
+        _mm256_storeu_ps(dst + i, v1);
+      }
+    }
+  });
+}
+
+template <typename F>
+void _itran(tensor a, F kernel) {
+  // kernel on inner-most dimension
+  auto inner_dim = a.size(-1);
+  ASSERT((inner_dim % 8) == 0);
+  parallel_nt(0, (a.numel() / inner_dim), 0, [&](int64_t i0, int64_t i1) {
+    for (auto i = i0; i < i1; i++) {
+      auto* dst = a.data<float>() + (i * inner_dim);
+      for (int64_t i = 0; i < inner_dim; i += 8) {
+        auto v1 = _mm256_loadu_ps(dst + i);
+        v1 = kernel(v1);
+        _mm256_storeu_ps(dst + i, v1);
+      }
+    }
+  });
+}
+
+// inplace transformation: activations/...
+void itrans(tensor a, const std::string& op) {
+  ASSERT(a.is<float>());
+  if (op == "silu") {
+    _itran(a, [](__m256 v) {
+      // https://pytorch.org/docs/stable/generated/torch.nn.SiLU.html
+      auto gate = sigmoid_avx2(v);
+      return _mm256_mul_ps(v, gate);
+    });
+    return;
+  }
+  ASSERT(false);
 }
 
 // https://pytorch.org/docs/stable/generated/torch.nn.functional.embedding.html

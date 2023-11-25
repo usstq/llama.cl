@@ -22,9 +22,7 @@ tensor from_buffer(py::buffer b, bool copy = false) {
   } else if (info.format == py::format_descriptor<int8_t>::format()) {
     ret.reset(reinterpret_cast<int8_t*>(src_ptr), info.shape, info.strides);
   } else {
-    std::stringstream ss;
-    ss << "Incompatible format: " << info.format;
-    throw std::runtime_error(ss.str());
+    throw_rt_error("Unsupported python struct format: ", info.format);
   }
   if (copy) {
     ASSERT(ret.is_dense());
@@ -47,6 +45,7 @@ py::array to_numpy(tensor& p) {
   if (p.is<int8_t>())
     return py::array(p.shape<ssize_t>(), p.byte_strides<ssize_t>(),
                      p.data<int8_t>(), free_when_done);
+  throw_rt_error("Unsupported data type in to_numpy(): ", p.tinfo()->name());
   return py::array(0, reinterpret_cast<int8_t*>(nullptr));
 }
 
@@ -117,12 +116,11 @@ PYBIND11_MODULE(llmops, m) {
       .def("numel", &tensor::numel)
       .def("numpy", [](tensor& p) { return to_numpy(p); })
       .def(py::pickle(
-          [](tensor& p) {
-            // __getstate__ : Return a tuple that fully encodes the state
+          // https://docs.python.org/3/library/pickle.html#pickling-class-instances
+          [](tensor& p) {  // __getstate__
             return py::make_tuple(to_numpy(p));
           },
           [](py::tuple t) {  // __setstate__
-            ASSERT(t.size() == 1);
             return from_buffer(t[0].cast<py::array>(), true);
           }))
       .def("__getitem__", [](tensor& t, py::tuple index) {
@@ -135,15 +133,12 @@ PYBIND11_MODULE(llmops, m) {
   m.def("embedding", &embedding);
   m.def("rmsnorm", &rmsnorm);
   m.def("iadd", &iadd);
+  m.def("imul", &imul);
+  m.def("itrans", &itrans);
+  
   m.def("clone", &clone);
 
   m.def("offline_FC_quant_Q4A", &offline_FC_quant_Q4A);
   m.def("offline_FC_dequant_Q4A", &offline_FC_dequant_Q4A);
   m.def("fc_Q4A", &fc_Q4A);
-  m.def(
-      "subtract", [](int i, int j) { return i - j; }, R"pbdoc(
-        Subtract two numbers
-
-        Some other explanation about the subtract function.
-    )pbdoc");
 }
