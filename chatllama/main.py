@@ -144,6 +144,11 @@ class KVCache:
         # us beam_idx to gather(reorder kv cache), skipped in greedy case
         return self.cache[2*layer_idx + 0, :, :, :self.cur_kv_len, :], self.cache[2*layer_idx + 1, :, :, :self.cur_kv_len, :]
 
+def llmop_rope_embed(a, inv_freq, position_id):
+    ta = llmops.tensor(a.detach().numpy())
+    tiv = llmops.tensor(inv_freq.detach().numpy())
+    llmops.rope_embed(ta, tiv, position_id)
+
 class OP_mha:
     def __init__(self, layer_idx, rotary_dims, hidden_size, num_heads) -> None:
         self.rotary_dims = rotary_dims
@@ -152,10 +157,17 @@ class OP_mha:
         self.head_dim = self.hidden_size//self.num_heads
         self.layer_idx = layer_idx
 
-    def __call__(self, query_states, key_states, value_states, kv_cache, inv_freq):
+    def __call__(self, query_states, key_states, value_states, kv_cache, kv_cache_slots, position_id, inv_freq):
         num_kv_heads = self.num_heads
         # https://github.com/huggingface/transformers/blob/cc3e4781854a52cf090ffde28d884a527dab6708/src/transformers/models/llama/modeling_llama.py#L331
-        # query_states : B, L, H*S
+        # q    : B, qL, H*S
+        # k/v  : B, kvL, H*S
+        #
+        # kv-cache layout : [layer, B, H, max_length, S]
+        #
+        # cache_slots  [kvL]          : gives kv positions in the cache for each token [0 ~ kvL) in k/v to push.
+        # cache_gather [B, all-kvL]   : gives how to fetch from kv-cache to get present-kv
+        #
         bsz, q_len, _ = query_states.size()
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, num_kv_heads, self.head_dim).transpose(1, 2)
@@ -168,7 +180,7 @@ class OP_mha:
         def rope_embedd(x):
             half_rotary_dim = self.rotary_dims//2
             for k in range(q_len):
-                cur_position_id = kv_cache.position_id + k
+                cur_position_id = position_id + k
 
                 # better for python
                 xita = inv_freq * cur_position_id
@@ -192,8 +204,8 @@ class OP_mha:
                 #    x[:, :, k, i0] = y0
                 #    x[:, :, k, i1] = y1
 
-        rope_embedd(query_states)
-        rope_embedd(key_states)
+        llmop_rope_embed(query_states, inv_freq, position_id) #rope_embedd(query_states)
+        llmop_rope_embed(key_states, inv_freq, position_id) #rope_embedd(key_states)
 
         # kv_cache is a circular buffer, and tokens should be overwritten in word boundary
         # key_states, value_states = kv_cache.update_cache(self.layer_idx, key_states, value_states)
@@ -203,12 +215,16 @@ class OP_mha:
         #  
         #
         for k in range(q_len):
-            kv_cache.cache[2*self.layer_idx + 0, :, :, kv_cache.slots[k], :] = key_states[:, :, k, :]
-            kv_cache.cache[2*self.layer_idx + 1, :, :, kv_cache.slots[k], :] = value_states[:, :, k, :]
+            kv_cache[2*self.layer_idx + 0, :, :, kv_cache_slots[k], :] = key_states[:, :, k, :]
+            kv_cache[2*self.layer_idx + 1, :, :, kv_cache_slots[k], :] = value_states[:, :, k, :]
 
         # us beam_idx to gather(reorder kv cache), skipped in greedy case
-        key_states = kv_cache.cache[2*self.layer_idx + 0, :, :, :kv_cache.cur_kv_len, :]
-        value_states = kv_cache.cache[2*self.layer_idx + 1, :, :, :kv_cache.cur_kv_len, :]
+        if position_id + q_len < kv_cache.size(3):
+            key_states = kv_cache[2*self.layer_idx + 0, :, :, :(position_id + q_len), :]
+            value_states = kv_cache[2*self.layer_idx + 1, :, :, :(position_id + q_len), :]
+        else:
+            key_states = kv_cache[2*self.layer_idx + 0, :, :,:,:]
+            value_states = kv_cache[2*self.layer_idx + 1, :, :,:,:]
 
         #kv_seq_len = kv_cache.cur_kv_len
         #kv_mask = kv_cache.mask[:kv_seq_len]
@@ -231,7 +247,7 @@ class OP_mha:
 
         for k in range(q_len-1):
             pos = torch.arange(start=(k + 1), end=q_len, step=1, dtype = torch.int32)
-            pos = kv_cache.slots[pos]
+            pos = kv_cache_slots[pos]
 
             if self.layer_idx == 0:
                 print(f"k={k} pos={pos}")
@@ -375,8 +391,6 @@ class Model(nn.Module):
         # the consts capture constant known at compile-time 
         self.op_dict = {
             'model.embed_tokens': OP_embedding(hf_model.model.embed_tokens.weight),
-            'model.norm': OP_rmsnorm(hf_model.model.norm.weight, configs['rms_norm_eps']),
-            'lm_head': OP_fc(hf_model.lm_head),
             'layers': [
                 {
                     'input_layernorm': OP_rmsnorm(l.input_layernorm.weight, configs['rms_norm_eps']),
@@ -391,6 +405,8 @@ class Model(nn.Module):
                     'mlp.down_proj': OP_fc(l.mlp.down_proj),
                 } for i, l in enumerate(hf_model.model.layers)
             ],
+            'model.norm': OP_rmsnorm(hf_model.model.norm.weight, configs['rms_norm_eps']),
+            'lm_head': OP_fc(hf_model.lm_head),
         }
         cost = time.time() - beg
         print(f'extracting done, cost {cost:.2f} seconds')
@@ -425,7 +441,7 @@ class Model(nn.Module):
     # it manages per-session resources, thus it's part of pipeline
     # and the best way to pass such resource into pipeline is inputs
     # we should set it as inputs instead of object
-    def forward(self, input_ids, kv_cache):
+    def forward(self, input_ids, kv_cache, kv_cache_slots, position_id):
         op_dict = self.op_dict
 
         hidden_states = op_dict['model.embed_tokens'](input_ids)
@@ -438,7 +454,7 @@ class Model(nn.Module):
             k = ops['self_attn.k_proj'](input_layernorm)
             v = ops['self_attn.v_proj'](input_layernorm)
             # q/k/v:[batch, seq_len, hiden_states]
-            newq = ops["self_attn.mha"](q, k, v, kv_cache, self.inv_freq)
+            newq = ops["self_attn.mha"](q, k, v, kv_cache, kv_cache_slots, position_id, self.inv_freq)
             attn_output = ops['self_attn.o_proj'](newq)
 
             llmop_iadd(attn_output, hidden_states)
@@ -515,7 +531,7 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
 
             # logits    : [batch, q_len, vocab_size]
             first_tok_latency = time.time()
-            logits = model.forward(input_ids, kv_cache)
+            logits = model.forward(input_ids, kv_cache.cache, kv_cache.slots, kv_cache.position_id)
             first_tok_latency = time.time() - first_tok_latency
 
             # only the last token in instruct predict the next
@@ -535,7 +551,7 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
                     break
 
                 input_ids = next_tokens
-                logits = model.forward(input_ids, kv_cache)
+                logits = model.forward(input_ids, kv_cache.cache, kv_cache.slots, kv_cache.position_id)
 
                 second_tok_count += 1
                 next_tokens = torch.argmax(logits, dim=-1).reshape(batch_size, 1)

@@ -300,6 +300,18 @@ struct tensor {
     return true;
   }
 
+  template <typename I>
+  bool is(std::initializer_list<I> shape) const {
+    int i = 0;
+    for (auto it = shape.begin(); it != shape.end() && i < m_rank; ++it, ++i) {
+        if ((*it) != m_shape[i])
+            return false;
+    }
+    if (it != shape.end() || i < m_rank)
+        return false;
+    return true;
+  }
+
   template <typename ST = int64_t>
   std::vector<ST> shape() const {
     return std::vector<ST>(m_shape, m_shape + m_rank);

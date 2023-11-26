@@ -2,10 +2,11 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <iostream>
-#include "op_fc.hpp"
-#include "op_misc.hpp"
 #include "tensor.hpp"
 #include "utils.hpp"
+#include "op_fc.hpp"
+#include "op_attn.hpp"
+#include "op_misc.hpp"
 
 namespace py = pybind11;
 
@@ -135,7 +136,8 @@ PYBIND11_MODULE(llmops, m) {
   m.def("iadd", &iadd);
   m.def("imul", &imul);
   m.def("itrans", &itrans);
-  
+  m.def("rope_embed", &rope_embed);
+
   m.def("clone", &clone);
 
   m.def("offline_FC_quant_Q4A", &offline_FC_quant_Q4A);

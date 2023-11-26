@@ -3,6 +3,37 @@
 #include <stdint.h>
 #include <omp.h>
 
+
+//=================================================================================
+inline int64_t divup(int64_t x, int64_t y) {
+  return (x + y - 1) / y;
+}
+
+template <typename F>
+inline void parallel_nt(int64_t begin,
+                        int64_t end,
+                        int64_t grain_size,
+                        const F& f) {
+#pragma omp parallel
+  {
+    // choose number of tasks based on grain size and number of threads
+    // can't use num_threads clause due to bugs in GOMP's thread pool (See
+    // #32008)
+    int64_t num_threads = omp_get_num_threads();
+    if (grain_size > 0) {
+      num_threads = std::min(num_threads, divup((end - begin), grain_size));
+    }
+
+    int64_t tid = omp_get_thread_num();
+    int64_t chunk_size = divup((end - begin), num_threads);
+    int64_t begin_tid = begin + tid * chunk_size;
+    if (begin_tid < end) {
+      f(begin_tid, std::min(end, chunk_size + begin_tid));
+    }
+  }
+}
+
+//=================================================================================
 #ifdef _WIN32
 #include <intrin.h>
 #else
@@ -226,33 +257,4 @@ inline __m256 sigmoid_avx2(__m256 x) {
     static __m256 one = _mm256_set1_ps(1.0f);
     auto neg_x = _mm256_sub_ps(_mm256_setzero_ps(), x);
     return _mm256_rcp_ps(_mm256_add_ps(one, exp_ps_avx2(neg_x)));
-}
-
-//=================================================================================
-inline int64_t divup(int64_t x, int64_t y) {
-  return (x + y - 1) / y;
-}
-
-template <typename F>
-inline void parallel_nt(int64_t begin,
-                        int64_t end,
-                        int64_t grain_size,
-                        const F& f) {
-#pragma omp parallel
-  {
-    // choose number of tasks based on grain size and number of threads
-    // can't use num_threads clause due to bugs in GOMP's thread pool (See
-    // #32008)
-    int64_t num_threads = omp_get_num_threads();
-    if (grain_size > 0) {
-      num_threads = std::min(num_threads, divup((end - begin), grain_size));
-    }
-
-    int64_t tid = omp_get_thread_num();
-    int64_t chunk_size = divup((end - begin), num_threads);
-    int64_t begin_tid = begin + tid * chunk_size;
-    if (begin_tid < end) {
-      f(begin_tid, std::min(end, chunk_size + begin_tid));
-    }
-  }
 }
