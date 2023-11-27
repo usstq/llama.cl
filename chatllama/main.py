@@ -41,23 +41,6 @@ import llmops
 # thus we also can turn python into C++ for the same logic, w/o the need for graph
 # concept. we just need to make sure basic building blocks are consistent
 
-class OP_rms_norm:
-    def __init__(self, weight, variance_epsilon) -> None:
-        self.weight = torch.clone(weight)
-        self.variance_epsilon = variance_epsilon
-        pass
-
-    def __call__(self, input):
-        input_dtype = input.dtype
-        input = input.to(torch.float32)
-        variance = input.pow(2).mean(-1, keepdim=True)
-        input = input * torch.rsqrt(variance + self.variance_epsilon)
-        output = self.weight * input.to(input_dtype)
-        return output
-
-    def __repr__(self):
-        return f"OP_rms_norm(weight: {self.weight.shape}{self.weight.dtype}, esp:{self.variance_epsilon})"
-
 class OP_fc_f32:
     def __init__(self, linear) -> None:
         # weight.shape : [N, K]
@@ -153,22 +136,6 @@ def to_lt(a):
 
 def to_torch(a):
     return torch.from_numpy(a.numpy())
-
-def llmop_rope_embed(a, inv_freq, position_id):
-    llmops.rope_embed(to_lt(a), to_lt(inv_freq), position_id)
-
-class llmop_attn:
-    def __init__(self, layer_idx, rotary_dims, hidden_size, num_heads) -> None:
-        self.rotary_dims = rotary_dims
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.head_dim = self.hidden_size//self.num_heads
-        self.layer_idx = layer_idx
-
-    def __call__(self, query_states, key_states, value_states, kv_cache, kv_cache_slots, position_id, inv_freq):
-        out = query_states.clone()
-        o2 = llmops.attention_rope(to_lt(out), to_lt(query_states), to_lt(key_states), to_lt(value_states), to_lt(inv_freq), to_lt(kv_cache), to_lt(kv_cache_slots), position_id, self.layer_idx)
-        return to_torch(o2)
 
 class OP_attn:
     def __init__(self, layer_idx, rotary_dims, hidden_size, num_heads) -> None:
@@ -293,16 +260,6 @@ class OP_attn:
 # deployment (they can be implemented in C++ class with same function and API
 # with minimal effort). but python wrapper is best choice at developing stage.
 #
-
-def llmop_iadd(a, b):
-    llmops.iadd(to_lt(a), to_lt(b))
-
-def llmop_imul(a, b):
-    llmops.imul(to_lt(a), to_lt(b))
-
-def llmop_trans(a, opname):
-    llmops.itrans(to_lt(a), opname)
-
 class llmop_fc_q4a(object):
     def __init__(self, linear):
         self.weight = llmops.offline_FC_quant_Q4A(to_lt(linear.weight))
@@ -310,37 +267,37 @@ class llmop_fc_q4a(object):
         self.N = linear.weight.shape[0]
     
     def __call__(self, input):
-        out = llmops.fc_Q4A(to_lt(input), self.weight, self.N)
+        out = llmops.fc_Q4A(input, self.weight, self.N)
         if self.bias:
             llmops.iadd(out, self.bias)
-        return to_torch(out)
+        return out
 
     def __repr__(self):
         return f"llmop_fc_q4a(weight: {self.weight.shape})"
 
 class llmop_rmsnorm(object):
     def __init__(self, weight, variance_epsilon):
-        self.weight = llmops.clone(to_lt(weight))
+        self.weight = to_lt(weight).clone()
         self.eps = variance_epsilon
 
     def __call__(self, input):
         # variance = input.pow(2).mean(-1, keepdim=True)
         # input = input * torch.rsqrt(variance + variance_epsilon)
         # return weight * input.to(input_dtype)
-        llmops.rmsnorm(to_lt(input), self.weight, self.eps)
+        llmops.rmsnorm(input, self.weight, self.eps)
 
     def __repr__(self):
         return f"llmop_rmsnorm(weight: {self.weight.shape}, eps: {self.eps})"
 
 class llmop_embedding(object):
     def __init__(self, weight):
-        self.weight = llmops.clone(to_lt(weight))
+        self.weight = to_lt(weight).clone()
 
     def __call__(self, input_ids):
         # shape infer + output memory allocation are done explicitly as a separate step
-        output = torch.empty(*input_ids.shape, self.weight.shape[1])
+        output = llmops.empty(*input_ids.shape, self.weight.shape[1])
         # inference is done w/o shape-info
-        llmops.embedding(llmops.tensor(output.numpy()), llmops.tensor(input_ids.numpy()), self.weight)
+        llmops.embedding(output, input_ids, self.weight)
         return output
 
     def __repr__(self):
@@ -396,7 +353,7 @@ class Model(nn.Module):
         OP_fc = llmop_fc_q4a
         OP_rmsnorm = llmop_rmsnorm
         OP_embedding = llmop_embedding
-        OP_attn = llmop_attn
+
         # the consts capture constant known at compile-time 
         self.op_dict = {
             'model.embed_tokens': OP_embedding(hf_model.model.embed_tokens.weight),
@@ -407,7 +364,6 @@ class Model(nn.Module):
                     'self_attn.q_proj': OP_fc(l.self_attn.q_proj),
                     'self_attn.k_proj': OP_fc(l.self_attn.k_proj),
                     'self_attn.v_proj': OP_fc(l.self_attn.v_proj),
-                    'self_attn.mha' : OP_attn(i, configs["rotary_dims"], configs["hidden_size"], configs["head_num"]),
                     'self_attn.o_proj': OP_fc(l.self_attn.o_proj),
                     'mlp.gate_proj': OP_fc(l.mlp.gate_proj),
                     'mlp.up_proj': OP_fc(l.mlp.up_proj),
@@ -422,7 +378,8 @@ class Model(nn.Module):
 
         self.configs = configs
         rope_base = 10000
-        self.inv_freq = 1.0 / (rope_base ** (torch.arange(0, configs["rotary_dims"], 2).float().to("cpu") / configs["rotary_dims"]))
+        inv_freq = 1.0 / (rope_base ** (torch.arange(0, configs["rotary_dims"], 2).float().to("cpu") / configs["rotary_dims"]))
+        self.inv_freq = to_lt(inv_freq).clone()
         #self.compute_graph_emitter(hf_model)
 
     def load(self, path) -> None:
@@ -453,6 +410,10 @@ class Model(nn.Module):
     def forward(self, input_ids, kv_cache, kv_cache_slots, position_id):
         op_dict = self.op_dict
 
+        input_ids = to_lt(input_ids)
+        kv_cache = to_lt(kv_cache)
+        kv_cache_slots = to_lt(kv_cache_slots)
+
         hidden_states = op_dict['model.embed_tokens'](input_ids)
 
         for i, ops in enumerate(op_dict['layers']):
@@ -462,11 +423,13 @@ class Model(nn.Module):
             q = ops['self_attn.q_proj'](input_layernorm)
             k = ops['self_attn.k_proj'](input_layernorm)
             v = ops['self_attn.v_proj'](input_layernorm)
-            # q/k/v:[batch, seq_len, hiden_states]
-            newq = ops["self_attn.mha"](q, k, v, kv_cache, kv_cache_slots, position_id, self.inv_freq)
-            attn_output = ops['self_attn.o_proj'](newq)
 
-            llmop_iadd(attn_output, hidden_states)
+            # q/k/v:[batch, seq_len, hiden_states]
+            llmops.attention_rope(q, k, v, self.inv_freq, kv_cache, kv_cache_slots, position_id, i)
+
+            attn_output = ops['self_attn.o_proj'](q)
+
+            llmops.iadd(attn_output, hidden_states)
 
             post_attention_layernorm = attn_output.clone()
             ops['post_attention_layernorm'](post_attention_layernorm)
@@ -474,21 +437,21 @@ class Model(nn.Module):
             def mlp(states):
                 # GLU_silu is used for up_projection
                 gate = ops['mlp.gate_proj'](states)
-                llmop_trans(gate, "silu")
+                llmops.itrans(gate, "silu")
                 up_proj = ops['mlp.up_proj'](states)
-                llmop_imul(up_proj, gate)
+                llmops.imul(up_proj, gate)
                 # down projection
                 down_proj = ops['mlp.down_proj'](up_proj)
                 return down_proj
 
             hidden_states = mlp(post_attention_layernorm)
 
-            llmop_iadd(hidden_states, attn_output)
+            llmops.iadd(hidden_states, attn_output)
             
         op_dict['model.norm'](hidden_states)
 
         logits = op_dict['lm_head'](hidden_states)    # q:[batch, seq_len, hiden_states]
-        return logits
+        return to_torch(logits)
 
 #=================================================================
 # simple greedy pipeline using model_forward

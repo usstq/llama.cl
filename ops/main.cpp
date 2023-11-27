@@ -123,7 +123,7 @@ PYBIND11_MODULE(llmops, m) {
            })
       .def("numel", &tensor::numel)
       .def("numpy", [](tensor& p) { return to_numpy(p); })
-      .def("clone", [](tensor& p) { return clone(p); })
+      .def("clone", [](const tensor& p) { return clone(p); })
       .def(py::pickle(
           // https://docs.python.org/3/library/pickle.html#pickling-class-instances
           [](tensor& p) {  // __getstate__

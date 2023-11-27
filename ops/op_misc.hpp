@@ -4,7 +4,7 @@
 #include "tensor.hpp"
 #include "utils.hpp"
 
-tensor clone(tensor& old) {
+tensor clone(const tensor& old) {
   tensor newt;
   // allocate dense memory
   newt.reset(nullptr, *old.tinfo(), old.shape());

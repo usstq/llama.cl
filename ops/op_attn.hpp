@@ -36,17 +36,15 @@ void rope_embed(tensor& x, tensor inv_freq, int position_id) {
 }
 
 // attention with RoPE and kv-cache
-tensor attention_rope(tensor output,     // [B, qL, H*S]
-                      tensor q,          // [B, qL, H*S]
-                      tensor k,          // [B, qL, H*S]
-                      tensor v,          // [B, qL, H*S]
-                      tensor inv_freq,   // [rotary_dims/2] for RoPE
-                      tensor kv_cache,   // [2, B, H, max_length, S]
-                      tensor kvc_slots,  // [qL]
-                      int position_id,
-                      int layer_id) {
+void attention_rope(tensor q,          // [B, qL, H*S]
+                    tensor k,          // [B, qL, H*S]
+                    tensor v,          // [B, qL, H*S]
+                    tensor inv_freq,   // [rotary_dims/2] for RoPE
+                    tensor kv_cache,   // [2, B, H, max_length, S]
+                    tensor kvc_slots,  // [qL]
+                    int position_id,
+                    int layer_id) {
   // validate dtype & rank
-  ASSERT(output.is<float>(3));
   ASSERT(q.is<float>(3));
   ASSERT(k.is<float>(3));
   ASSERT(v.is<float>(3));
@@ -65,9 +63,8 @@ tensor attention_rope(tensor output,     // [B, qL, H*S]
   ASSERT(v.is({B, qL, H * S}));
   // ASSERT(kv_cache.is({2ll, B, H, max_length, S}));
   ASSERT(kvc_slots.is({qL}));
-  ASSERT(output.is({B, qL, H * S}));
 
-  q = q.reshape({B, qL, H, S}).permute({0, 2, 1, 3});
+  q = q.reshape({B, qL, H, S}).permute({0, 2, 1, 3}); // B,H,qL,S
   k = k.reshape({B, qL, H, S}).permute({0, 2, 1, 3});
   v = v.reshape({B, qL, H, S}).permute({0, 2, 1, 3});
 
@@ -156,8 +153,7 @@ tensor attention_rope(tensor output,     // [B, qL, H*S]
     }
   });
 
-  tensor output_emb;
-  output_emb.reset(reinterpret_cast<float*>(nullptr), {B, qL, H * S});
+  // inplace output to q (override q)
   parallel_nt(0, B * H * qL, 0, [&](int64_t i0, int64_t i1) {
     for (int64_t i = i0; i < i1; i++) {
       auto pq = i % qL;
@@ -166,9 +162,8 @@ tensor attention_rope(tensor output,     // [B, qL, H*S]
       auto b = bh / H;
       auto* temp = &m_temp.at<float>({0, b, pq, h, 0});
       size_t temp_stride = m_temp.stride(0);
-      auto* dst = &output_emb.at<float>({b, pq, h * S});
+      auto* dst = &q.at<float>({b, h, pq, 0});
       reduce_v(dst, temp, nthr, S, temp_stride);
     }
   });
-  return output_emb;
 }
