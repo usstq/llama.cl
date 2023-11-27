@@ -6,16 +6,6 @@
 
 //======================================================================================
 // fullyconnect
-typedef short float16;
-float16 to_fp16(float v) {
-  return static_cast<float16>(_mm_cvtsi128_si32(
-      _mm256_cvtps_ph(_mm256_set1_ps(v), _MM_FROUND_CUR_DIRECTION)));
-}
-float to_fp32(float16 v) {
-  float x[8];
-  _mm256_storeu_ps(x, _mm256_cvtph_ps(_mm_set1_epi16(v)));
-  return x[0];
-}
 
 // deq(q)=(d*q + m)
 struct q4_1_block {

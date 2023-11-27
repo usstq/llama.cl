@@ -108,6 +108,22 @@ def test_tensor():
         di = pickle.load(f)
         print(di, di['a'])
 
-test_tensor()
+def test_softmax():
+    def do_test(input):
+        ref = torch.nn.functional.softmax(input, dim=-1)
+        act = llmops.tensor(input.numpy()).clone()
+        llmops.softmax(act)
+        if not numpy.allclose(ref.numpy(), act.numpy()):
+            print(ref.numpy())
+            print(act.numpy())
+        else:
+            print("pass")
+
+    do_test(torch.rand(7, 12, 3, 69, dtype=torch.float32) - 0.5)
+    do_test(torch.tensor([0.66046,0.61789,-0.289624,0.799137,-0.715343,0.321021,1.47277,-3.40282e+38,], dtype=torch.float32))
+    do_test(torch.tensor([0.66046,0.61789,], dtype=torch.float32))
+
+test_softmax()
+#test_tensor()
 #test_fc()
 sys.exit(0)

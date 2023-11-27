@@ -179,3 +179,16 @@ void rmsnorm(tensor input, tensor weight, float variance_epsilon) {
     }
   });
 }
+
+void softmax(tensor input) {
+  ASSERT(input.is<float>());  // [N, ..., K]
+  ASSERT(input.is_dense());
+  auto K = input.size(-1);
+  auto batches = input.numel() / K;
+  auto* psrc = input.data<float>();
+  parallel_nt(0, batches, 0, [&](int64_t b0, int64_t b1) {
+    for (int64_t b = b0; b < b1; b++) {
+      _softmax(psrc + b * K, K);
+    }
+  });
+}

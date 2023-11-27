@@ -16,7 +16,14 @@ tensor from_buffer(py::buffer b, bool copy = false) {
   void* src_ptr = copy ? nullptr : info.ptr;
   if (info.format == py::format_descriptor<float>::format()) {
     ret.reset(reinterpret_cast<float*>(src_ptr), info.shape, info.strides);
+  } else if (info.format == py::format_descriptor<int32_t>::format()) {
+    ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
   } else if (info.format == py::format_descriptor<int>::format()) {
+    ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
+  } else if (info.format == py::format_descriptor<long>::format()) {
+    ASSERT(sizeof(long) == sizeof(int32_t));
+    ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
+  } else if (info.format == "l") {
     ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
   } else if (info.format == py::format_descriptor<long long>::format()) {
     ret.reset(reinterpret_cast<int64_t*>(src_ptr), info.shape, info.strides);
@@ -116,6 +123,7 @@ PYBIND11_MODULE(llmops, m) {
            })
       .def("numel", &tensor::numel)
       .def("numpy", [](tensor& p) { return to_numpy(p); })
+      .def("clone", [](tensor& p) { return clone(p); })
       .def(py::pickle(
           // https://docs.python.org/3/library/pickle.html#pickling-class-instances
           [](tensor& p) {  // __getstate__
@@ -137,7 +145,8 @@ PYBIND11_MODULE(llmops, m) {
   m.def("imul", &imul);
   m.def("itrans", &itrans);
   m.def("rope_embed", &rope_embed);
-
+  m.def("softmax", &softmax);
+  m.def("attention_rope", &attention_rope);
   m.def("clone", &clone);
 
   m.def("offline_FC_quant_Q4A", &offline_FC_quant_Q4A);

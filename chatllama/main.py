@@ -144,12 +144,33 @@ class KVCache:
         # us beam_idx to gather(reorder kv cache), skipped in greedy case
         return self.cache[2*layer_idx + 0, :, :, :self.cur_kv_len, :], self.cache[2*layer_idx + 1, :, :, :self.cur_kv_len, :]
 
-def llmop_rope_embed(a, inv_freq, position_id):
-    ta = llmops.tensor(a.detach().numpy())
-    tiv = llmops.tensor(inv_freq.detach().numpy())
-    llmops.rope_embed(ta, tiv, position_id)
+def to_lt(a):
+    if a is None:
+        return llmops.empty(0)
+    if type(a) is llmops.tensor:
+        return a
+    return llmops.tensor(a.detach().numpy())
 
-class OP_mha:
+def to_torch(a):
+    return torch.from_numpy(a.numpy())
+
+def llmop_rope_embed(a, inv_freq, position_id):
+    llmops.rope_embed(to_lt(a), to_lt(inv_freq), position_id)
+
+class llmop_attn:
+    def __init__(self, layer_idx, rotary_dims, hidden_size, num_heads) -> None:
+        self.rotary_dims = rotary_dims
+        self.hidden_size = hidden_size
+        self.num_heads = num_heads
+        self.head_dim = self.hidden_size//self.num_heads
+        self.layer_idx = layer_idx
+
+    def __call__(self, query_states, key_states, value_states, kv_cache, kv_cache_slots, position_id, inv_freq):
+        out = query_states.clone()
+        o2 = llmops.attention_rope(to_lt(out), to_lt(query_states), to_lt(key_states), to_lt(value_states), to_lt(inv_freq), to_lt(kv_cache), to_lt(kv_cache_slots), position_id, self.layer_idx)
+        return to_torch(o2)
+
+class OP_attn:
     def __init__(self, layer_idx, rotary_dims, hidden_size, num_heads) -> None:
         self.rotary_dims = rotary_dims
         self.hidden_size = hidden_size
@@ -159,6 +180,7 @@ class OP_mha:
 
     def __call__(self, query_states, key_states, value_states, kv_cache, kv_cache_slots, position_id, inv_freq):
         num_kv_heads = self.num_heads
+
         # https://github.com/huggingface/transformers/blob/cc3e4781854a52cf090ffde28d884a527dab6708/src/transformers/models/llama/modeling_llama.py#L331
         # q    : B, qL, H*S
         # k/v  : B, kvL, H*S
@@ -204,9 +226,8 @@ class OP_mha:
                 #    x[:, :, k, i0] = y0
                 #    x[:, :, k, i1] = y1
 
-        llmop_rope_embed(query_states, inv_freq, position_id) #rope_embedd(query_states)
-        llmop_rope_embed(key_states, inv_freq, position_id) #rope_embedd(key_states)
-
+        rope_embedd(query_states)
+        rope_embedd(key_states)
         # kv_cache is a circular buffer, and tokens should be overwritten in word boundary
         # key_states, value_states = kv_cache.update_cache(self.layer_idx, key_states, value_states)
         #
@@ -217,7 +238,7 @@ class OP_mha:
         for k in range(q_len):
             kv_cache[2*self.layer_idx + 0, :, :, kv_cache_slots[k], :] = key_states[:, :, k, :]
             kv_cache[2*self.layer_idx + 1, :, :, kv_cache_slots[k], :] = value_states[:, :, k, :]
-
+        
         # us beam_idx to gather(reorder kv cache), skipped in greedy case
         if position_id + q_len < kv_cache.size(3):
             key_states = kv_cache[2*self.layer_idx + 0, :, :, :(position_id + q_len), :]
@@ -248,9 +269,6 @@ class OP_mha:
         for k in range(q_len-1):
             pos = torch.arange(start=(k + 1), end=q_len, step=1, dtype = torch.int32)
             pos = kv_cache_slots[pos]
-
-            if self.layer_idx == 0:
-                print(f"k={k} pos={pos}")
             attn_weights[:, :, k, pos] = torch.finfo(torch.float32).min
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -275,15 +293,6 @@ class OP_mha:
 # deployment (they can be implemented in C++ class with same function and API
 # with minimal effort). but python wrapper is best choice at developing stage.
 #
-def to_lt(a):
-    if a is None:
-        return llmops.empty(0)
-    if type(a) is llmops.tensor:
-        return a
-    return llmops.tensor(a.detach().numpy())
-
-def to_torch(a):
-    return torch.from_numpy(a.numpy())
 
 def llmop_iadd(a, b):
     llmops.iadd(to_lt(a), to_lt(b))
@@ -387,7 +396,7 @@ class Model(nn.Module):
         OP_fc = llmop_fc_q4a
         OP_rmsnorm = llmop_rmsnorm
         OP_embedding = llmop_embedding
-
+        OP_attn = llmop_attn
         # the consts capture constant known at compile-time 
         self.op_dict = {
             'model.embed_tokens': OP_embedding(hf_model.model.embed_tokens.weight),
@@ -398,7 +407,7 @@ class Model(nn.Module):
                     'self_attn.q_proj': OP_fc(l.self_attn.q_proj),
                     'self_attn.k_proj': OP_fc(l.self_attn.k_proj),
                     'self_attn.v_proj': OP_fc(l.self_attn.v_proj),
-                    'self_attn.mha' : OP_mha(i, configs["rotary_dims"], configs["hidden_size"], configs["head_num"]),
+                    'self_attn.mha' : OP_attn(i, configs["rotary_dims"], configs["hidden_size"], configs["head_num"]),
                     'self_attn.o_proj': OP_fc(l.self_attn.o_proj),
                     'mlp.gate_proj': OP_fc(l.mlp.gate_proj),
                     'mlp.up_proj': OP_fc(l.mlp.up_proj),

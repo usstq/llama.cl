@@ -3,34 +3,6 @@
 #include <stdint.h>
 #include "tensor.hpp"
 #include "utils.hpp"
-/*
-        def rope_embedd(x):
-            half_rotary_dim = self.rotary_dims//2
-            for k in range(q_len):
-                cur_position_id = position_id + k
-
-                # better for python
-                xita = inv_freq * cur_position_id
-                vcos = torch.cos(xita)
-                vsin = torch.sin(xita)
-                x0 = x[:, :, k, :half_rotary_dim]
-                x1 = x[:, :, k, half_rotary_dim:]
-                y0 = vcos * x0 - vsin * x1
-                y1 = vsin * x0 + vcos * x1
-                x[:, :, k, :half_rotary_dim] = y0
-                x[:, :, k, half_rotary_dim:] = y1
-
-                ## better for C++
-                #for i0 in range(half_rotary_dim):
-                #    i1 = i0 + half_rotary_dim
-                #   xita = (inv_freq[i0] * cur_position_id)
-                #    vcos = math.cos(xita)
-                #    vsin = math.sin(xita)
-                #    y0 = vcos * x[:, :, k, i0] - vsin * x[:, :, k, i1]
-                #    y1 = vsin * x[:, :, k, i0] + vcos * x[:, :, k, i1]
-                #    x[:, :, k, i0] = y0
-                #    x[:, :, k, i1] = y1
-*/
 void rope_embed(tensor& x, tensor inv_freq, int position_id) {
   // assume x : [B, H, L, S]
   auto B = x.size(0);
@@ -62,16 +34,17 @@ void rope_embed(tensor& x, tensor inv_freq, int position_id) {
     }
   });
 }
-#if 0
+
 // attention with RoPE and kv-cache
-void attention_rope(tensor output,     // [B, qL, H*S]
-                    tensor q,          // [B, qL, H*S]
-                    tensor k,          // [B, kvL, H*S]
-                    tensor v,          // [B, kvL, H*S]
-                    tensor inv_freq,   // [rotary_dims/2] for RoPE
-                    tensor kv_cache,   // [2, B, H, max_length, S]
-                    tensor kvc_slots,  // [kvL]
-                    int position_id) {
+tensor attention_rope(tensor output,     // [B, qL, H*S]
+                      tensor q,          // [B, qL, H*S]
+                      tensor k,          // [B, qL, H*S]
+                      tensor v,          // [B, qL, H*S]
+                      tensor inv_freq,   // [rotary_dims/2] for RoPE
+                      tensor kv_cache,   // [2, B, H, max_length, S]
+                      tensor kvc_slots,  // [qL]
+                      int position_id,
+                      int layer_id) {
   // validate dtype & rank
   ASSERT(output.is<float>(3));
   ASSERT(q.is<float>(3));
@@ -83,19 +56,119 @@ void attention_rope(tensor output,     // [B, qL, H*S]
   auto B = q.size(0);
   auto qL = q.size(1);
   auto H = kv_cache.size(2);
-  auto max_length = kv_cache.size(3);
+  auto max_kv_length = kv_cache.size(3);
   auto S = kv_cache.size(-1);
-  auto kvL = k.size(1);
 
   // validate shape
   ASSERT(q.is({B, qL, H * S}));
-  ASSERT(k.is({B, kvL, H * S}));
-  ASSERT(v.is({B, kvL, H * S}));
-  ASSERT(kv_cache.is({2, B, H, max_length, S}));
-  ASSERT(kvc_slots.is({kvL}));
+  ASSERT(k.is({B, qL, H * S}));
+  ASSERT(v.is({B, qL, H * S}));
+  // ASSERT(kv_cache.is({2ll, B, H, max_length, S}));
+  ASSERT(kvc_slots.is({qL}));
   ASSERT(output.is({B, qL, H * S}));
 
-  // positional embedding
+  q = q.reshape({B, qL, H, S}).permute({0, 2, 1, 3});
+  k = k.reshape({B, qL, H, S}).permute({0, 2, 1, 3});
+  v = v.reshape({B, qL, H, S}).permute({0, 2, 1, 3});
 
+  // inplace positional embedding
+  rope_embed(q, inv_freq, position_id);
+  rope_embed(k, inv_freq, position_id);
+
+  // put k/v into cache
+  auto* slots = kvc_slots.data<int32_t>();
+  parallel_nt(0, B * H * qL, 0, [&](int64_t bhl0, int64_t bhl1) {
+    for (auto bhl = bhl0; bhl < bhl1; bhl++) {
+      auto pk = bhl % qL;
+      auto bh = (bhl / qL);
+      auto h = bh % H;
+      auto b = bh / H;
+      memcpy(&kv_cache.at<float>({2 * layer_id + 0, b, h, slots[pk], 0}),
+             &k.at<float>({b, h, pk, 0}), sizeof(float) * S);
+      memcpy(&kv_cache.at<float>({2 * layer_id + 1, b, h, slots[pk], 0}),
+             &v.at<float>({b, h, pk, 0}), sizeof(float) * S);
+    }
+  });
+
+  auto kcache = kv_cache.slice(0, 2 * layer_id + 0, 2 * layer_id + 0);
+  auto vcache = kv_cache.slice(0, 2 * layer_id + 1, 2 * layer_id + 1);
+
+  auto kvLen = position_id + qL;
+  if (kvLen > max_kv_length) {
+    kvLen = max_kv_length;
+  }
+
+  // main attention logic
+  auto d_scale = 1.0f / sqrt(S);
+  tensor attn_w;
+  attn_w.reset(reinterpret_cast<float*>(nullptr), {B, H, qL, kvLen});
+  parallel_nt(0, B * H * kvLen, 0, [&](int64_t bhl0, int64_t bhl1) {
+    for (auto bhl = bhl0; bhl < bhl1; bhl++) {
+      auto pk = bhl % kvLen;
+      auto bh = (bhl / kvLen);
+      auto h = bh % H;
+      auto b = bh / H;
+      for (int64_t pq = 0; pq < qL; pq++) {
+        float sum = 0;
+        sum = dot_product(&q.at<float>({b, h, pq, 0}),
+                          &kcache.at<float>({b, h, pk, 0}), S);
+        attn_w.at<float>({b, h, pq, pk}) = sum * d_scale;
+      }
+    }
+  });
+
+  // softmax
+  parallel_nt(0, B * H * qL, 0, [&](int64_t bhl0, int64_t bhl1) {
+    for (auto bhl = bhl0; bhl < bhl1; bhl++) {
+      auto pq = bhl % qL;
+      auto bh = (bhl / qL);
+      auto h = bh % H;
+      auto b = bh / H;
+
+      // clear invalid kv attention weights
+      auto* pw = &attn_w.at<float>({b, h, pq, 0});
+      for (int64_t pk = pq + 1; pk < qL; pk++) {
+        pw[slots[pk]] = std::numeric_limits<float>::lowest();
+      }
+      _softmax(pw, kvLen);
+    }
+  });
+
+  tensor m_temp;
+  int64_t nthr = omp_get_max_threads();
+  m_temp.reset(reinterpret_cast<float*>(nullptr), {nthr, B, qL, H, S});
+  parallel_nt(0, B * H * kvLen, 0, [&](int64_t i0, int64_t i1) {
+    auto ithr = omp_get_thread_num();
+    memset(&m_temp.at<float>({ithr, 0, 0, 0, 0}), 0,
+           m_temp.stride(0) * sizeof(float));
+
+    for (int64_t i = i0; i < i1; i++) {
+      auto pv = i % kvLen;
+      auto bh = i / kvLen;
+      auto h = bh % H;
+      auto b = bh / H;
+      auto* v = &vcache.at<float>({b, h, pv, 0});
+      for (int64_t pq = 0; pq < qL; pq++) {
+        auto* out = &m_temp.at<float>({ithr, b, pq, h, 0});
+        auto weight = attn_w.at<float>({b, h, pq, pv});
+        accumulate_weighted_v(out, weight, v, S);
+      }
+    }
+  });
+
+  tensor output_emb;
+  output_emb.reset(reinterpret_cast<float*>(nullptr), {B, qL, H * S});
+  parallel_nt(0, B * H * qL, 0, [&](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; i++) {
+      auto pq = i % qL;
+      auto bh = i / qL;
+      auto h = bh % H;
+      auto b = bh / H;
+      auto* temp = &m_temp.at<float>({0, b, pq, h, 0});
+      size_t temp_stride = m_temp.stride(0);
+      auto* dst = &output_emb.at<float>({b, pq, h * S});
+      reduce_v(dst, temp, nthr, S, temp_stride);
+    }
+  });
+  return output_emb;
 }
-#endif

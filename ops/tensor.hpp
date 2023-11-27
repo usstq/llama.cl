@@ -20,7 +20,7 @@ static inline void throw_rt_error(Args&&... args) {
 
 #define ASSERT(condition)                                                     \
   if (!(condition)) {                                                         \
-    throw_rt_error("assert", #condition, "failed at" __FILE__, ":", __LINE__, \
+    throw_rt_error("assert", #condition, "failed at", __FILE__, ":", __LINE__, \
                    "  ");                                                     \
   }
 
@@ -174,13 +174,13 @@ struct tensor {
     reset(ptr, typeid(T), dims, bytes_strides);
   }
 
-  tensor permute(const std::vector<size_t>& order) const {
+  tensor permute(const std::vector<int>& order) const {
     if (order.size() != m_rank)
       throw_rt_error("permute with inconsistent number of order.");
 
     tensor newtv(*this);
     uint32_t hit_mask = 0;
-    for (size_t i = 0; i < m_rank; i++) {
+    for (int i = 0; i < m_rank; i++) {
       auto j = order[i];
       if (j < 0 || j > m_rank)
         throw_rt_error("permute order ", j, " out of range [0,", m_rank, ")");
@@ -225,7 +225,8 @@ struct tensor {
     return reshape(new_shape);
   }
 
-  tensor reshape(const std::vector<size_t>& target_shape) const {
+  template <typename I = int64_t>
+  tensor reshape(const std::vector<I>& target_shape) const {
     if (!is_dense())
       throw_rt_error("tensor reshape only support dense layout.");
 
@@ -300,10 +301,11 @@ struct tensor {
     return true;
   }
 
-  template <typename I>
+  template <typename I = int64_t>
   bool is(std::initializer_list<I> shape) const {
     int i = 0;
-    for (auto it = shape.begin(); it != shape.end() && i < m_rank; ++it, ++i) {
+    auto it = shape.begin();
+    for (; it != shape.end() && i < m_rank; ++it, ++i) {
         if ((*it) != m_shape[i])
             return false;
     }
@@ -380,75 +382,6 @@ struct tensor {
     return *reinterpret_cast<T*>(reinterpret_cast<int8_t*>(m_ptr.get()) +
                                  off * m_item_size);
   }
-
-#if 0
-    std::string repr(int max_total_lines = 16, int lines_per_row = 1) const {
-        if (!m_ptr) {
-            return "{empty}";
-        }
-        std::stringstream ss;
-        ss << data_type_name<T>::value << " shape=[";
-        const char* sep = "";
-        size_t sz = 1;
-        for (size_t i = 0; i < m_rank; i++) {
-            ss << sep << m_shape[i];
-            sz *= m_shape[i];
-            sep = ",";
-        }
-        ss << "] strides=[";
-        sep = "";
-        for (size_t i = 0; i < m_rank; i++) {
-            ss << sep << m_strides[i];
-            sep = ",";
-        }
-        ss << "] {";
-        if (m_rank > 1)
-            ss << "\n";
-        auto last_dim_size = m_shape[m_rank - 1];
-        int row_id = 0;
-        int cur_row_lines_left = lines_per_row;
-        size_t cur_line_elecnt = 0;
-        size_t cur_row_elecnt = 0;
-        size_t i;
-        auto* p = reinterpret_cast<T*>(m_ptr);
-        for (i = 0; i < sz && max_total_lines > 0; i++) {
-            if ((i % last_dim_size) == 0) {
-                ss << row_id << ":\t\t";
-                row_id++;
-                cur_row_lines_left = lines_per_row;
-            }
-
-            // display current element if we still have buget
-            if (cur_row_lines_left > 0) {
-                if (std::is_integral<T>::value)
-                    ss << static_cast<int64_t>(p[i]) << ",";
-                else
-                    ss << p[i] << ",";
-                cur_line_elecnt++;
-                cur_row_elecnt++;
-                if ((cur_line_elecnt % 16) == 15 || (cur_row_elecnt == last_dim_size)) {
-                    max_total_lines--;
-                    cur_row_lines_left--;
-                    if (cur_row_lines_left == 0) {
-                        if (cur_row_elecnt == last_dim_size)
-                            ss << ",\n";
-                        else
-                            ss << "...\n";
-                        cur_row_elecnt = 0;
-                    } else {
-                        ss << "\n\t\t";
-                    }
-                    cur_line_elecnt = 0;
-                }
-            }
-        }
-        if (i < sz) {
-            ss << "... ... ... ... \n";
-        }
-        ss << "}";
-        return ss.str();
-    }
-#endif
 
   template <typename T>
   void print_subtensor(std::stringstream& os,
