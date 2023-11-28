@@ -54,9 +54,9 @@ py::array to_numpy(tensor& p) {
     return py::array(p.shape<ssize_t>(), p.byte_strides<ssize_t>(),
                      p.data<int8_t>(), free_when_done);
   throw_rt_error("Unsupported data type in to_numpy(): ", p.tinfo()->name());
-  return py::array(0, reinterpret_cast<int8_t*>(nullptr));
+  return py::array(0, static_cast<int8_t*>(nullptr));
 }
-
+  
 PYBIND11_MODULE(llmops, m) {
   m.doc() = R"pbdoc(
         Pybind11 example plugin
@@ -152,4 +152,6 @@ PYBIND11_MODULE(llmops, m) {
   m.def("offline_FC_quant_Q4A", &offline_FC_quant_Q4A);
   m.def("offline_FC_dequant_Q4A", &offline_FC_dequant_Q4A);
   m.def("fc_Q4A", &fc_Q4A);
+
+  m.def("syclmain", &syclmain);
 }

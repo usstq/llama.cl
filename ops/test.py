@@ -1,6 +1,10 @@
 import os, sys, time
+
+os.add_dll_directory("C:/Program Files (x86)/Intel/oneAPI/compiler/latest/windows/redist/intel64_win/compiler")
+os.add_dll_directory("C:/Program Files (x86)/Intel/oneAPI/compiler/2023.2.1/windows/bin")
 current_file_path = os.path.dirname(os.path.abspath(__file__))
-sys.path.append(current_file_path  + "./build/Release")
+print(current_file_path  + "\\build")
+sys.path.append(current_file_path  + "\\build")
 import llmops
 import numpy
 import torch
@@ -123,7 +127,10 @@ def test_softmax():
     do_test(torch.tensor([0.66046,0.61789,-0.289624,0.799137,-0.715343,0.321021,1.47277,-3.40282e+38,], dtype=torch.float32))
     do_test(torch.tensor([0.66046,0.61789,], dtype=torch.float32))
 
-test_softmax()
+for i in range(10):
+    llmops.syclmain()
+
+#test_softmax()
 #test_tensor()
 #test_fc()
 sys.exit(0)

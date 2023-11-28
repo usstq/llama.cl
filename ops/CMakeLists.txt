@@ -1,4 +1,14 @@
 cmake_minimum_required(VERSION 3.4...3.18)
+
+option(USE_ICX "Build the Intel Compiler library" ON)
+
+if (USE_ICX)
+    # enforce Intel Compiler
+    set(CMAKE_C_COMPILER "icx")
+    set(CMAKE_CXX_COMPILER "icx")
+    set(CMAKE_LINKER "icx")
+endif(USE_ICX)
+
 project(llmops)
 
 # manually add entry PYTHON_EXECUTABLE pointting to python38.exe
@@ -13,13 +23,21 @@ if (OPENMP_FOUND)
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif()
 
-if (UNIX)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-endif (UNIX)
+if (USE_ICX)
+    # DPC++ related flags
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsycl")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Qxhost")
+    set (CMAKE_CXX_LINK_FLAGS "${CMAKE_CXX_LINK_FLAGS} -fsycl")
+else()
+    if (UNIX)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+    endif (UNIX)
 
-if (MSVC)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch:AVX2")
-endif (MSVC)
+    if (MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch:AVX2")
+    endif (MSVC)
+endif(USE_ICX)
 
 add_subdirectory(pybind11)
 

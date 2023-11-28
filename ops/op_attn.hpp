@@ -3,6 +3,36 @@
 #include <stdint.h>
 #include "tensor.hpp"
 #include "utils.hpp"
+
+#if defined(SYCL_LANGUAGE_VERSION) && defined (__INTEL_LLVM_COMPILER)
+#include <sycl/sycl.hpp>
+using namespace sycl;
+
+static const int N = 8;
+
+queue& get_sycl_queue() {
+  static queue q;
+  static auto qname = q.get_device().get_info<info::device::name>();
+  std::cout << qname << std::endl;
+  return q;
+}
+
+int syclmain(){
+  auto& q = get_sycl_queue();
+  int *data = malloc_shared<int>(N, q);
+  for(int i=0; i<N; i++) data[i] = i;
+
+  q.parallel_for(range<1>(N), [=] (id<1> i){
+    data[i] *= 2;
+  }).wait();
+
+  for(int i=0; i<N; i++) std::cout << data[i] << ",";
+  std::cout << std::endl;
+  free(data, q);
+  return 0;
+}
+#endif
+
 void rope_embed(tensor& x, tensor inv_freq, int position_id) {
   // assume x : [B, H, L, S]
   auto B = x.size(0);
@@ -98,7 +128,7 @@ void attention_rope(tensor q,          // [B, qL, H*S]
   // main attention logic
   auto d_scale = 1.0f / sqrt(S);
   tensor attn_w;
-  attn_w.reset(reinterpret_cast<float*>(nullptr), {B, H, qL, kvLen});
+  attn_w.reset(static_cast<float*>(nullptr), {B, H, qL, kvLen});
   parallel_nt(0, B * H * kvLen, 0, [&](int64_t bhl0, int64_t bhl1) {
     for (auto bhl = bhl0; bhl < bhl1; bhl++) {
       auto pk = bhl % kvLen;
@@ -133,7 +163,7 @@ void attention_rope(tensor q,          // [B, qL, H*S]
 
   tensor m_temp;
   int64_t nthr = omp_get_max_threads();
-  m_temp.reset(reinterpret_cast<float*>(nullptr), {nthr, B, qL, H, S});
+  m_temp.reset(static_cast<float*>(nullptr), {nthr, B, qL, H, S});
   parallel_nt(0, B * H * kvLen, 0, [&](int64_t i0, int64_t i1) {
     auto ithr = omp_get_thread_num();
     memset(&m_temp.at<float>({ithr, 0, 0, 0, 0}), 0,
