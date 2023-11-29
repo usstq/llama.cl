@@ -13,7 +13,6 @@ project(llmops)
 
 # manually add entry PYTHON_EXECUTABLE pointting to python38.exe
 
-set(PYTHON_EXECUTABLE "C:/Users/tingqian/AppData/Local/Programs/Python/Python38/python38.exe")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 find_package(OpenMP)

@@ -4,35 +4,6 @@
 #include "tensor.hpp"
 #include "utils.hpp"
 
-#if defined(SYCL_LANGUAGE_VERSION) && defined (__INTEL_LLVM_COMPILER)
-#include <sycl/sycl.hpp>
-using namespace sycl;
-
-static const int N = 8;
-
-queue& get_sycl_queue() {
-  static queue q;
-  static auto qname = q.get_device().get_info<info::device::name>();
-  std::cout << qname << std::endl;
-  return q;
-}
-
-int syclmain(){
-  auto& q = get_sycl_queue();
-  int *data = malloc_shared<int>(N, q);
-  for(int i=0; i<N; i++) data[i] = i;
-
-  q.parallel_for(range<1>(N), [=] (id<1> i){
-    data[i] *= 2;
-  }).wait();
-
-  for(int i=0; i<N; i++) std::cout << data[i] << ",";
-  std::cout << std::endl;
-  free(data, q);
-  return 0;
-}
-#endif
-
 void rope_embed(tensor& x, tensor inv_freq, int position_id) {
   // assume x : [B, H, L, S]
   auto B = x.size(0);
