@@ -12,8 +12,6 @@ import torch.nn.functional as F
 from torch import nn
 import numpy
 
-from . import c_ext
-
 from transformers import AutoTokenizer, TextStreamer
 
 # intel compiler introduced dependency :  libmmd.dll    libiomp5md.dll
@@ -321,7 +319,7 @@ class Model(nn.Module):
         tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
         if tokenizer.pad_token is None:
             tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-            tokenizer.pad_token = tokenizer.eos_token_id
+            #tokenizer.pad_token = tokenizer.eos_token_id
         tokenizer.padding_side = "left"             # pad to left
         self.tokenizer = tokenizer
 
@@ -413,7 +411,7 @@ class Model(nn.Module):
     def forward(self, input_ids, kv_cache, kv_cache_slots, position_id):
         op_dict = self.op_dict
 
-        input_ids = to_lt(input_ids)
+        input_ids = to_lt(input_ids.to(torch.int32))
         kv_cache = to_lt(kv_cache)
         kv_cache_slots = to_lt(kv_cache_slots)
 
@@ -575,3 +573,6 @@ def main():
     #model.to(args.device)
 
     simple_chat_pipeline(model, args.prompt, args.kv_len, args.sys, args.verbose)
+
+if __name__ == '__main__':
+    main()

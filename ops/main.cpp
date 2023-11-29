@@ -147,7 +147,7 @@ PYBIND11_MODULE(llmops, m) {
   m.def("rope_embed", &rope_embed);
   m.def("softmax", &softmax);
   m.def("attention_rope", &attention_rope);
-  m.def("clone", &clone);
+  m.def("clone", [](const tensor& p) { return clone(p); });
 
   m.def("offline_FC_quant_Q4A", &offline_FC_quant_Q4A);
   m.def("offline_FC_dequant_Q4A", &offline_FC_dequant_Q4A);

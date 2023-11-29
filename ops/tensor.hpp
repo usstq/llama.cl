@@ -18,10 +18,10 @@ static inline void throw_rt_error(Args&&... args) {
   throw std::runtime_error(ss.str());
 }
 
-#define ASSERT(condition)                                                     \
-  if (!(condition)) {                                                         \
+#define ASSERT(condition)                                                      \
+  if (!(condition)) {                                                          \
     throw_rt_error("assert", #condition, "failed at", __FILE__, ":", __LINE__, \
-                   "  ");                                                     \
+                   "  ");                                                      \
   }
 
 struct tensor {
@@ -32,8 +32,9 @@ struct tensor {
     bool overflow = false;
     indices(tensor& t) : t(t) {}
 
+    const int64_t& operator[](int64_t i) const { return index[i]; }
     int64_t& operator[](int64_t i) { return index[i]; }
-    int rank() { return t.rank(); }
+    int rank() const { return t.rank(); }
 
     int64_t move_to(int64_t index_flatten_1d) {
       for (auto r = t.rank() - 1; r >= 0; r--) {
@@ -161,8 +162,8 @@ struct tensor {
       m_ptr = std::shared_ptr<void>(_aligned_malloc(capacity_new, 64),
                                     [](void* p) { _aligned_free(p); });
 #else
-      ::posix_memalign(&ptr, 64, capacity_new) m_ptr =
-          std::shared_ptr<void>(ptr, [](void* p) { ::free(m_ptr); });
+      ::posix_memalign(&ptr, 64, capacity_new);
+      m_ptr = std::shared_ptr<void>(ptr, [](void* p) { ::free(p); });
 #endif
     }
   }
@@ -306,11 +307,11 @@ struct tensor {
     int i = 0;
     auto it = shape.begin();
     for (; it != shape.end() && i < m_rank; ++it, ++i) {
-        if ((*it) != m_shape[i])
-            return false;
+      if ((*it) != m_shape[i])
+        return false;
     }
     if (it != shape.end() || i < m_rank)
-        return false;
+      return false;
     return true;
   }
 
@@ -358,6 +359,8 @@ struct tensor {
         // allow_broadcast only works when the dimension is really 1
         coordinate = 0;
       } else {
+        std::cout << "coordinate=" << coordinate << "  m_shape[" << i << "]=" << m_shape[i] << std::endl;
+        asm("int3");
         assert(coordinate < m_shape[i]);
       }
       off += m_strides[i] * coordinate;

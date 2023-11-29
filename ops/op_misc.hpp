@@ -137,7 +137,7 @@ void itrans(tensor a, const std::string& op) {
 
 // https://pytorch.org/docs/stable/generated/torch.nn.functional.embedding.html
 void embedding(tensor output, tensor input, tensor weight) {
-  ASSERT(input.is<int64_t>());
+  ASSERT(input.is<int32_t>());
   ASSERT(weight.is<float>(2));
   ASSERT(output.is<float>());
 
@@ -155,7 +155,7 @@ void embedding(tensor output, tensor input, tensor weight) {
 
   ASSERT(infer_shape() == output.shape());
 
-  auto* src = input.data<int64_t>();
+  auto* src = input.data<int32_t>();
   auto* dst = output.data<float>();
   parallel_nt(0, input.numel(), 0, [&](int64_t i0, int64_t i1) {
     for (int64_t i = i0; i < i1; i++) {
