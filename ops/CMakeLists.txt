@@ -13,7 +13,6 @@ project(llmops)
 
 # manually add entry PYTHON_EXECUTABLE pointting to python38.exe
 
-set(PYTHON_EXECUTABLE "C:/Users/tingqian/AppData/Local/Programs/Python/Python38/python38.exe")
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 find_package(OpenMP)
@@ -23,21 +22,27 @@ if (OPENMP_FOUND)
     set (CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif()
 
+if (UNIX)
 if (USE_ICX)
     # DPC++ related flags
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsycl")
-    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions")
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -xhost")
+    set (CMAKE_CXX_LINK_FLAGS "${CMAKE_CXX_LINK_FLAGS} -fsycl")
+else()
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+endif (USE_ICX)
+endif (UNIX)
+
+if (MSVC)
+if (USE_ICX)
+    # DPC++ related flags
+    set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fsycl")
     set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Qxhost")
     set (CMAKE_CXX_LINK_FLAGS "${CMAKE_CXX_LINK_FLAGS} -fsycl")
 else()
-    if (UNIX)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-    endif (UNIX)
-
-    if (MSVC)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -arch:AVX2")
-    endif (MSVC)
-endif(USE_ICX)
+endif (USE_ICX)
+endif (MSVC)
 
 add_subdirectory(pybind11)
 

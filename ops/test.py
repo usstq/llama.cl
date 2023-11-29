@@ -1,10 +1,10 @@
 import os, sys, time
 
-os.add_dll_directory("C:/Program Files (x86)/Intel/oneAPI/compiler/latest/windows/redist/intel64_win/compiler")
-os.add_dll_directory("C:/Program Files (x86)/Intel/oneAPI/compiler/2023.2.1/windows/bin")
-current_file_path = os.path.dirname(os.path.abspath(__file__))
-print(current_file_path  + "\\build")
-sys.path.append(current_file_path  + "\\build")
+if sys.platform == 'win32':
+    os.add_dll_directory("C:/Program Files (x86)/Intel/oneAPI/compiler/latest/windows/redist/intel64_win/compiler")
+    os.add_dll_directory("C:/Program Files (x86)/Intel/oneAPI/compiler/2023.2.1/windows/bin")
+sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build"))
+
 import llmops
 import numpy
 import torch
