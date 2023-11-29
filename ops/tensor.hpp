@@ -359,8 +359,6 @@ struct tensor {
         // allow_broadcast only works when the dimension is really 1
         coordinate = 0;
       } else {
-        std::cout << "coordinate=" << coordinate << "  m_shape[" << i << "]=" << m_shape[i] << std::endl;
-        asm("int3");
         assert(coordinate < m_shape[i]);
       }
       off += m_strides[i] * coordinate;

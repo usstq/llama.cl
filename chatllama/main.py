@@ -411,7 +411,7 @@ class Model(nn.Module):
     def forward(self, input_ids, kv_cache, kv_cache_slots, position_id):
         op_dict = self.op_dict
 
-        input_ids = to_lt(input_ids.to(torch.int32))
+        input_ids = to_lt(input_ids)
         kv_cache = to_lt(kv_cache)
         kv_cache_slots = to_lt(kv_cache_slots)
 

@@ -19,7 +19,7 @@ tensor clone(const tensor& old) {
   return newt;
 }
 
-#if defined(SYCL_LANGUAGE_VERSION) && defined (__INTEL_LLVM_COMPILER)
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
 #include <sycl/sycl.hpp>
 using namespace sycl;
 
@@ -32,16 +32,16 @@ queue& get_sycl_queue() {
   return q;
 }
 
-int syclmain(){
+int syclmain() {
   auto& q = get_sycl_queue();
-  int *data = malloc_shared<int>(N, q);
-  for(int i=0; i<N; i++) data[i] = i;
+  int* data = malloc_shared<int>(N, q);
+  for (int i = 0; i < N; i++)
+    data[i] = i;
 
-  q.parallel_for(range<1>(N), [=] (id<1> i){
-    data[i] *= 2;
-  }).wait();
+  q.parallel_for(range<1>(N), [=](id<1> i) { data[i] *= 2; }).wait();
 
-  for(int i=0; i<N; i++) std::cout << data[i] << ",";
+  for (int i = 0; i < N; i++)
+    std::cout << data[i] << ",";
   std::cout << std::endl;
   free(data, q);
   return 0;
@@ -136,8 +136,20 @@ void itrans(tensor a, const std::string& op) {
 }
 
 // https://pytorch.org/docs/stable/generated/torch.nn.functional.embedding.html
+template <typename Tidx, typename Tvalue = float>
+static void _embedding_template(tensor output, tensor input, tensor weight) {
+  auto embedding_dim = weight.size(1);
+  auto* src = input.data<Tidx>();
+  auto* dst = output.data<Tvalue>();
+  parallel_nt(0, input.numel(), 0, [&](int64_t i0, int64_t i1) {
+    for (int64_t i = i0; i < i1; i++) {
+      auto index = src[i];
+      memcpy(dst + i * embedding_dim, &weight.at<Tvalue>({index, 0}),
+             embedding_dim * weight.item_size());
+    }
+  });
+}
 void embedding(tensor output, tensor input, tensor weight) {
-  ASSERT(input.is<int32_t>());
   ASSERT(weight.is<float>(2));
   ASSERT(output.is<float>());
 
@@ -155,15 +167,11 @@ void embedding(tensor output, tensor input, tensor weight) {
 
   ASSERT(infer_shape() == output.shape());
 
-  auto* src = input.data<int32_t>();
-  auto* dst = output.data<float>();
-  parallel_nt(0, input.numel(), 0, [&](int64_t i0, int64_t i1) {
-    for (int64_t i = i0; i < i1; i++) {
-      auto index = src[i];
-      memcpy(dst + i * embedding_dim, &weight.at<float>({index, 0}),
-             embedding_dim * weight.item_size());
-    }
-  });
+  if (input.is<int32_t>()) {
+    _embedding_template<int32_t>(output, input, weight);
+  } else {
+    _embedding_template<int64_t>(output, input, weight);
+  }
 }
 
 // https://github.com/huggingface/transformers/blob/c5be38cd27bee92be73c73ba09aec8bedf841423/src/transformers/models/llama/modeling_llama.py#L105
