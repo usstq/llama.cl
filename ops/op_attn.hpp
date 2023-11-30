@@ -10,6 +10,7 @@ void rope_embed(tensor& x, tensor inv_freq, int position_id) {
   auto H = x.size(1);
   auto L = x.size(2);
   auto S = x.size(3);
+  //std::cout << x.stride(0) << ","<< x.stride(1) << ","<< x.stride(2) << ","<< x.stride(3) << "\n";
   auto half_ro_ndims = inv_freq.size(0);
   auto* ifreq = inv_freq.data<float>();
   parallel_nt(0, B * H, 0, [&](int64_t bh0, int64_t bh1) {
@@ -17,19 +18,19 @@ void rope_embed(tensor& x, tensor inv_freq, int position_id) {
       auto b = bh / H;
       auto h = bh % H;
       for (int k = 0; k < L; k++) {
-        auto* px = &x.at<float>({b, h, k, 0});
+        float* px = &x.at<float>({b, h, k, 0});
         int i0 = 0;
         for (i0 = 0; i0 < half_ro_ndims; i0++) {
           auto i1 = i0 + half_ro_ndims;
-          auto xita = ifreq[i0] * (k + position_id);
-          auto vcos = std::cos(xita);
-          auto vsin = std::sin(xita);
-          auto& x0 = px[i0];
-          auto& x1 = px[i1];
+          float xita = ifreq[i0] * (k + position_id);
+          float vcos = std::cos(xita);
+          float vsin = std::sin(xita);
+          auto x0 = px[i0];
+          auto x1 = px[i1];
           auto y0 = vcos * x0 - vsin * x1;
           auto y1 = vsin * x0 + vcos * x1;
-          x0 = y0;
-          x1 = y1;
+          px[i0] = y0;
+          px[i1] = y1;
         }
       }
     }

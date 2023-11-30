@@ -70,7 +70,7 @@ tensor offline_FC_dequant_Q4A(tensor weiq) {
       q4_1_block* wq4 = &weiq.at<q4_1_block>({nb, 0, 0});
       for (int64_t kb = 0, k0 = 0; kb < Kgroups; kb++, k0 += group_k, wq4++) {
         for (int64_t ni = 0; ni < group_n; ni++) {
-          for (int ki = 0; ki < group_k; ki++) {
+          for (int64_t ki = 0; ki < group_k; ki++) {
             output.at<float>({n0 + ni, k0 + ki}) = wq4->get(ki, ni);
           }
         }
