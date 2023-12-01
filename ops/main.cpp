@@ -153,5 +153,5 @@ PYBIND11_MODULE(llmops, m) {
   m.def("offline_FC_dequant_Q4A", &offline_FC_dequant_Q4A);
   m.def("fc_Q4A", &fc_Q4A);
 
-  m.def("syclmain", &syclmain);
+  //m.def("syclmain", &syclmain);
 }

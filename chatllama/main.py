@@ -369,7 +369,7 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
                 inputs = tokenizer(f"[INST] <<SYS>> {sys_msg} <</SYS>> [/INST]", return_tensors="pt", padding=True, return_token_type_ids=False)
                 input_ids = inputs["input_ids"]
                 assert(kv_cache.prepare(input_ids.shape[1], -1, -1))
-                logits = model.forward(input_ids, kv_cache)
+                logits = model.forward(input_ids, kv_cache.cache, kv_cache.slots, kv_cache.position_id)
                 sys_msg = None
 
             if org_prompt:
@@ -377,7 +377,7 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
             else:
                 print("\033[0;32m")
                 try:
-                    prompt = input(">")
+                    prompt = input(f"{kv_cache.position_id_next} >")
                 except EOFError:
                     break
 
@@ -432,14 +432,20 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
 
 def main():
     parser = argparse.ArgumentParser('')
-    
+
+    def is_valid_file(parser, arg):
+        if not os.path.exists(arg) and isinstance(arg, str):
+            return arg
+        else:
+            return open(arg, 'r').read()
+
     # /home/tingqian/models/chinese-alpaca-2-1.3b-hf
     # C:/Users/tingqian/Syncplicity/LTQ/Models/chinese-alpaca-2-1.3b-hf
     parser.add_argument('-hf', '--hf_model', type=str)
     parser.add_argument('-m', '--model', type=str, default='saved_model.pkl')
     parser.add_argument('-q', '--quant', type=str)
     parser.add_argument('--save', action="store_true")
-    parser.add_argument('--sys', type=str, default=None)
+    parser.add_argument('--sys', type=lambda x: is_valid_file(parser, x), default=None)
     parser.add_argument('--kv-len', type=int, default=2048)
     parser.add_argument('-v', '--verbose', action="store_true")
     parser.add_argument('-d', '--device', default="cpu")
@@ -448,6 +454,9 @@ def main():
     args = parser.parse_args()
 
     model = Model()
+
+    if args.sys:
+        print(f"<<SYS>> prompt : \033[0;32m\n{args.sys}\n\033[00m")
 
     print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
     if args.hf_model:
@@ -461,7 +470,6 @@ def main():
     print(model)
 
     print(f"to device {args.device} ... ")
-    #model.to(args.device)
 
     simple_chat_pipeline(model, args.prompt, args.kv_len, args.sys, args.verbose)
 
