@@ -81,7 +81,7 @@ class KVCache:
             print(f"qlen={query_len}, sid={sentence_id}, slot={self.cur_slot}")
 
         cur_slot = self.cur_slot
-        self.slots = torch.empty(query_len, dtype=torch.int32)
+        self.slots = torch.empty(query_len, dtype=torch.long)
         for k in range(query_len):
             # skip cache slot reserved for system message
             while self.mask[cur_slot] < 0:
@@ -137,117 +137,6 @@ def to_lt(a):
 
 def to_torch(a):
     return torch.from_numpy(a.numpy())
-
-class OP_attn:
-    def __init__(self, layer_idx, rotary_dims, hidden_size, num_heads) -> None:
-        self.rotary_dims = rotary_dims
-        self.hidden_size = hidden_size
-        self.num_heads = num_heads
-        self.head_dim = self.hidden_size//self.num_heads
-        self.layer_idx = layer_idx
-
-    def __call__(self, query_states, key_states, value_states, kv_cache, kv_cache_slots, position_id, inv_freq):
-        num_kv_heads = self.num_heads
-
-        # https://github.com/huggingface/transformers/blob/cc3e4781854a52cf090ffde28d884a527dab6708/src/transformers/models/llama/modeling_llama.py#L331
-        # q    : B, qL, H*S
-        # k/v  : B, kvL, H*S
-        #
-        # kv-cache layout : [layer, B, H, max_length, S]
-        #
-        # cache_slots  [kvL]          : gives kv positions in the cache for each token [0 ~ kvL) in k/v to push.
-        # cache_gather [B, all-kvL]   : gives how to fetch from kv-cache to get present-kv
-        #
-        bsz, q_len, _ = query_states.size()
-        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len, num_kv_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, num_kv_heads, self.head_dim).transpose(1, 2)
-
-        # q/k/v states : [batch, nHead, q_len, head_dim]
-
-        # derive total kv length from attn (has limitation)
-        # apply_rotary_pos_emb to key_states/value_states    
-        def rope_embedd(x):
-            half_rotary_dim = self.rotary_dims//2
-            for k in range(q_len):
-                cur_position_id = position_id + k
-
-                # better for python
-                xita = inv_freq * cur_position_id
-                vcos = torch.cos(xita)
-                vsin = torch.sin(xita)
-                x0 = x[:, :, k, :half_rotary_dim]
-                x1 = x[:, :, k, half_rotary_dim:]
-                y0 = vcos * x0 - vsin * x1
-                y1 = vsin * x0 + vcos * x1
-                x[:, :, k, :half_rotary_dim] = y0
-                x[:, :, k, half_rotary_dim:] = y1
-
-                ## better for C++
-                #for i0 in range(half_rotary_dim):
-                #    i1 = i0 + half_rotary_dim
-                #   xita = (inv_freq[i0] * cur_position_id)
-                #    vcos = math.cos(xita)
-                #    vsin = math.sin(xita)
-                #    y0 = vcos * x[:, :, k, i0] - vsin * x[:, :, k, i1]
-                #    y1 = vsin * x[:, :, k, i0] + vcos * x[:, :, k, i1]
-                #    x[:, :, k, i0] = y0
-                #    x[:, :, k, i1] = y1
-
-        rope_embedd(query_states)
-        rope_embedd(key_states)
-        # kv_cache is a circular buffer, and tokens should be overwritten in word boundary
-        # key_states, value_states = kv_cache.update_cache(self.layer_idx, key_states, value_states)
-        #
-        #  cache: [num_layers*2, B, H, length_max, S]
-        #  slots: [q_len]   where ith query token should be placed cache
-        #  
-        #
-        for k in range(q_len):
-            kv_cache[2*self.layer_idx + 0, :, :, kv_cache_slots[k], :] = key_states[:, :, k, :]
-            kv_cache[2*self.layer_idx + 1, :, :, kv_cache_slots[k], :] = value_states[:, :, k, :]
-        
-        # us beam_idx to gather(reorder kv cache), skipped in greedy case
-        if position_id + q_len < kv_cache.size(3):
-            key_states = kv_cache[2*self.layer_idx + 0, :, :, :(position_id + q_len), :]
-            value_states = kv_cache[2*self.layer_idx + 1, :, :, :(position_id + q_len), :]
-        else:
-            key_states = kv_cache[2*self.layer_idx + 0, :, :,:,:]
-            value_states = kv_cache[2*self.layer_idx + 1, :, :,:,:]
-
-        #kv_seq_len = kv_cache.cur_kv_len
-        #kv_mask = kv_cache.mask[:kv_seq_len]
-
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-        # mask out attn weight for kv-tokens whose [kv_cache_mask == 0]
-        # attn_weights[:, :, :, kv_mask==0] = torch.finfo(torch.float32).min
-
-        # apply causal mask, so:
-        #    q-token[q_len-1] can use all kv-tokens
-        #    q-token[q_len-2] can use all kv-tokens except the last one
-        #    q-token[q_len-3] can use all kv-tokens except the last two
-        #    q-token[k] can use all kv-tokens except the last (q_len - 1 - k)
-        #    ....
-        # [batch, num_heads, q_len ,kv_len] 
-
-        #if self.layer_idx == 0:
-        #    print(f"==={kv_cache.slots}")
-
-        for k in range(q_len-1):
-            pos = torch.arange(start=(k + 1), end=q_len, step=1, dtype = torch.int32)
-            pos = kv_cache_slots[pos]
-            attn_weights[:, :, k, pos] = torch.finfo(torch.float32).min
-
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_output = torch.matmul(attn_weights, value_states)
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
-        return attn_output
-
-    def __repr__(self):
-        return f"OP_mha(layer_idx:{self.layer_idx}, hidden_size:{self.hidden_size}, rotary_dims:{self.rotary_dims}, num_heads:{self.num_heads}, head_dim:{self.head_dim})"
-
 
 #=========================================================================
 # llmops provide functional kernels which are computational intensive,
@@ -427,6 +316,7 @@ class Model(nn.Module):
 
             # q/k/v:[batch, seq_len, hiden_states]
             llmops.attention_rope(q, k, v, self.inv_freq, kv_cache, kv_cache_slots, position_id, i)
+            #torch_attention_rope(q, k, v, self.inv_freq, kv_cache, kv_cache_slots, position_id, i)
 
             attn_output = ops['self_attn.o_proj'](q)
 
@@ -495,6 +385,7 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
             sentence_id += 1
 
             inputs = tokenizer(f"[INST] {prompt} [/INST]", return_tensors="pt", padding=True, return_token_type_ids=False)
+            #inputs = tokenizer(f"{prompt}", return_tensors="pt", padding=True, return_token_type_ids=False)
             input_ids = inputs["input_ids"]
 
             # append last predicted token(usually it's EOS)

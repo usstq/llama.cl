@@ -10,8 +10,8 @@ void rope_embed(tensor& x, tensor inv_freq, int position_id) {
   auto H = x.size(1);
   auto L = x.size(2);
   auto S = x.size(3);
-  //std::cout << "       x: " << x.repr(false) << "\n";
-  //std::cout << "inv_freq: " << inv_freq.repr(false) << "\n";
+  // std::cout << "       x: " << x.repr(false) << "\n";
+  // std::cout << "inv_freq: " << inv_freq.repr(false) << "\n";
   auto half_ro_ndims = inv_freq.size(0);
   auto* ifreq = inv_freq.data<float>();
   parallel_nt(0, B * H, 0, [&](int64_t bh0, int64_t bh1) {
@@ -67,7 +67,7 @@ void attention_rope(tensor q,          // [B, qL, H*S]
   // ASSERT(kv_cache.is({2ll, B, H, max_length, S}));
   ASSERT(kvc_slots.is({qL}));
 
-  q = q.reshape({B, qL, H, S}).permute({0, 2, 1, 3}); // B,H,qL,S
+  q = q.reshape({B, qL, H, S}).permute({0, 2, 1, 3});  // B,H,qL,S
   k = k.reshape({B, qL, H, S}).permute({0, 2, 1, 3});
   v = v.reshape({B, qL, H, S}).permute({0, 2, 1, 3});
 
@@ -135,13 +135,18 @@ void attention_rope(tensor q,          // [B, qL, H*S]
   });
 
   tensor m_temp;
-  int64_t nthr = omp_get_max_threads();
+  auto nthr = omp_get_max_threads();
   m_temp.reset(static_cast<float*>(nullptr), {nthr, B, qL, H, S});
-  parallel_nt(0, B * H * kvLen, 0, [&](int64_t i0, int64_t i1) {
+
+  int64_t work_amount = B * H * kvLen;
+  parallel_nt(0, nthr, 0, [&](int64_t tid0, int64_t tid1) {
     auto ithr = omp_get_thread_num();
     memset(&m_temp.at<float>({ithr, 0, 0, 0, 0}), 0,
            m_temp.stride(0) * sizeof(float));
 
+    // split works amount nthr
+    int64_t i0, i1;
+    splitter(work_amount, nthr, ithr, i0, i1);
     for (int64_t i = i0; i < i1; i++) {
       auto pv = i % kvLen;
       auto bh = i / kvLen;

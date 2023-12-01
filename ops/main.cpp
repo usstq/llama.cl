@@ -47,6 +47,9 @@ py::array to_numpy(tensor& p) {
   if (p.is<float>())
     return py::array(p.shape<ssize_t>(), p.byte_strides<ssize_t>(),
                      p.data<float>(), free_when_done);
+  if (p.is<long>())
+    return py::array(p.shape<ssize_t>(), p.byte_strides<ssize_t>(),
+                     p.data<long>(), free_when_done);
   if (p.is<int8_t>())
     return py::array(p.shape<ssize_t>(), p.byte_strides<ssize_t>(),
                      p.data<int8_t>(), free_when_done);

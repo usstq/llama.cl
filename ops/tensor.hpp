@@ -450,13 +450,17 @@ struct tensor {
     ss << "]";
 
     if (with_values) {
-        ss << "\n";
-        if (m_p_tinfo == &typeid(float))
+      ss << "\n";
+      if (m_p_tinfo == &typeid(float))
         print_subtensor<float>(ss, data<float>(), &m_shape[0], &m_strides[0],
-                                m_rank, 0);
-        if (m_p_tinfo == &typeid(int8_t))
+                               m_rank, 0);
+      if (m_p_tinfo == &typeid(int8_t))
         print_subtensor<int8_t>(ss, data<int8_t>(), &m_shape[0], &m_strides[0],
                                 m_rank, 0);
+
+      if (m_p_tinfo == &typeid(long))
+        print_subtensor<long>(ss, data<long>(), &m_shape[0], &m_strides[0],
+                              m_rank, 0);
     }
     return ss.str();
   }

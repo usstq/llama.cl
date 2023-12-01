@@ -224,8 +224,6 @@ def attention_rope(query_states, key_states, value_states, inv_freq, kv_cache, k
     num_heads = kv_cache.size(2)
     max_kv_length = kv_cache.size(3)
     head_dim = kv_cache.size(-1)
-    # [half_ro_ndims]
-    rotary_dims = inv_freq.size(0) * 2
 
     # https://github.com/huggingface/transformers/blob/cc3e4781854a52cf090ffde28d884a527dab6708/src/transformers/models/llama/modeling_llama.py#L331
     # q    : B, qL, H*S
@@ -258,14 +256,9 @@ def attention_rope(query_states, key_states, value_states, inv_freq, kv_cache, k
 
     # q/k/v states : [batch, nHead, q_len, head_dim]
 
-    # derive total kv length from attn (has limitation)
-    # apply_rotary_pos_emb to key_states/value_states    
-
     #rope_embed(query_states, inv_freq, position_id)
     #rope_embed(key_states, inv_freq, position_id)
 
-    query_states = query_states.contiguous()
-    key_states = key_states.contiguous()
     llmops.rope_embed(to_lt(query_states), to_lt(inv_freq), position_id)
     llmops.rope_embed(to_lt(key_states), to_lt(inv_freq), position_id)
 
@@ -290,9 +283,6 @@ def attention_rope(query_states, key_states, value_states, inv_freq, kv_cache, k
     #kv_mask = kv_cache.mask[:kv_seq_len]
     attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(head_dim)
 
-    # mask out attn weight for kv-tokens whose [kv_cache_mask == 0]
-    # attn_weights[:, :, :, kv_mask==0] = torch.finfo(torch.float32).min
-
     # apply causal mask, so:
     #    q-token[q_len-1] can use all kv-tokens
     #    q-token[q_len-2] can use all kv-tokens except the last one
@@ -300,10 +290,6 @@ def attention_rope(query_states, key_states, value_states, inv_freq, kv_cache, k
     #    q-token[k] can use all kv-tokens except the last (q_len - 1 - k)
     #    ....
     # [batch, num_heads, q_len ,kv_len] 
-
-    #if self.layer_idx == 0:
-    #    print(f"==={kv_cache.slots}")
-
     for k in range(q_len-1):
         pos = torch.arange(start=(k + 1), end=q_len, step=1, dtype = torch.int32)
         pos = kv_cache_slots[pos]
@@ -317,13 +303,13 @@ def attention_rope(query_states, key_states, value_states, inv_freq, kv_cache, k
 
 def test_mha():
     #  [B, qL, H*S]
-    cur_kv_len = 0
+    cur_kv_len = 10
     B = 1
-    qL = 8
+    qL = 1
     H = 32
     S = 128
     rotary_dims = 64
-    max_length = 16
+    max_length = 32
     
     query_states = torch.rand(B, qL, H*S)
     key_states = torch.rand(B, qL, H*S)
@@ -332,21 +318,24 @@ def test_mha():
     rope_base = 10000
     inv_freq = 1.0 / (rope_base ** (torch.arange(0, rotary_dims, 2).float().to("cpu") / rotary_dims))
     #inv_freq = inv_freq * 0
-    print(f"inv_freq={inv_freq}")
+    #print(f"inv_freq={inv_freq}")
 
     # [2, B, H, max_length, S]
     kv_cache = torch.rand(2, B, H, max_length, S)
     # [qL]
-    kv_cache_slots = torch.arange(cur_kv_len, cur_kv_len + qL, dtype=torch.int32)
+    kv_cache_slots = torch.arange(cur_kv_len, cur_kv_len + qL)
 
     position_id = cur_kv_len
     layer_idx = 0
 
+    lt_kv_cache = to_lt(kv_cache).clone()
+    lt_out = to_lt(query_states).clone()
+    lt_key = to_lt(key_states).clone()
+    lt_value = to_lt(value_states).clone()
+
     ref = attention_rope(query_states, key_states, value_states, inv_freq, kv_cache, kv_cache_slots, position_id, layer_idx).numpy()
-    
-    out = to_lt(query_states).clone()
-    llmops.attention_rope(out, to_lt(key_states), to_lt(value_states), to_lt(inv_freq), to_lt(kv_cache), to_lt(kv_cache_slots), position_id, 0)
-    out = out.numpy()
+    llmops.attention_rope(lt_out, lt_key, lt_value, to_lt(inv_freq), lt_kv_cache, to_lt(kv_cache_slots), position_id, 0)
+    out = lt_out.numpy()
 
     print(ref.shape, out.shape)
     for i in range(qL):
