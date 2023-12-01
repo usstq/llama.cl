@@ -73,16 +73,21 @@ def test_embedding():
     vocab_size = 3
     embedding_dim = 4096
     weight = torch.rand(vocab_size, embedding_dim)
-    input = torch.randint(0, vocab_size, (batch_size, seq_len))
+    input = torch.randint(0, vocab_size, (batch_size, seq_len), dtype=torch.int64)
 
-    print("input=", input.dtype, input.shape, input)
+    print("input=", input.numpy().dtype, input.dtype, input.shape, input)
     print("weight=", weight.dtype, weight.shape, weight)
     ref = torch.nn.functional.embedding(input, weight)
     print("ref=", ref.numpy())
     out = llmops.empty(batch_size, seq_len, embedding_dim)
-    act = llmops.embedding(out, to_lt(input), to_lt(weight))
+    llmops.embedding(out, to_lt(input), to_lt(weight))
     print("out=", out.numpy())
-    assert numpy.allclose(ref.numpy(), numpy.array(out, copy=False))
+    for i in range(seq_len):
+        a = ref.numpy()[0,i,:]
+        b = out.numpy()[0,i,:]
+        if not numpy.allclose(a, b):
+            print("not match!======", i, a, b)
+    assert numpy.allclose(ref.numpy(), out.numpy())
 
 def test_rmsnorm():
     batch_size = 1

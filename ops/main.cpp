@@ -20,11 +20,8 @@ tensor from_buffer(py::buffer b, bool copy = false) {
     ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
   } else if (info.format == py::format_descriptor<int>::format()) {
     ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
-  } else if (info.format == py::format_descriptor<long>::format()) {
-    ASSERT(sizeof(long) == sizeof(int32_t));
-    ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
-  } else if (info.format == "l") {
-    ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
+  } else if (info.format == py::format_descriptor<long>::format() || info.format == "l") {
+    ret.reset(reinterpret_cast<long*>(src_ptr), info.shape, info.strides);
   } else if (info.format == py::format_descriptor<long long>::format()) {
     ret.reset(reinterpret_cast<int64_t*>(src_ptr), info.shape, info.strides);
   } else if (info.format == py::format_descriptor<int8_t>::format()) {
