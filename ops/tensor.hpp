@@ -427,17 +427,15 @@ struct tensor {
     os << "]";
   }
 
-  std::string repr(int max_total_lines = 16, int lines_per_row = 1) const {
+  std::string repr(bool with_values = true) const {
     if (!m_ptr) {
       return "tensor{empty}";
     }
     std::stringstream ss;
-    ss << "tensor shape=[";
+    ss << "tensor " << m_p_tinfo->name() << "(" << m_item_size << ") shape=[";
     const char* sep = "";
-    size_t sz = 1;
     for (size_t i = 0; i < m_rank; i++) {
       ss << sep << m_shape[i];
-      sz *= m_shape[i];
       sep = ",";
     }
     ss << "] strides=[";
@@ -446,13 +444,17 @@ struct tensor {
       ss << sep << m_strides[i];
       sep = ",";
     }
-    ss << "] " << m_p_tinfo->name() << " item_size=" << m_item_size << "\n";
-    if (m_p_tinfo == &typeid(float))
-      print_subtensor<float>(ss, data<float>(), &m_shape[0], &m_strides[0],
-                             m_rank, 0);
-    if (m_p_tinfo == &typeid(int8_t))
-      print_subtensor<int8_t>(ss, data<int8_t>(), &m_shape[0], &m_strides[0],
-                              m_rank, 0);
+    ss << "]";
+
+    if (with_values) {
+        ss << "\n";
+        if (m_p_tinfo == &typeid(float))
+        print_subtensor<float>(ss, data<float>(), &m_shape[0], &m_strides[0],
+                                m_rank, 0);
+        if (m_p_tinfo == &typeid(int8_t))
+        print_subtensor<int8_t>(ss, data<int8_t>(), &m_shape[0], &m_strides[0],
+                                m_rank, 0);
+    }
     return ss.str();
   }
 

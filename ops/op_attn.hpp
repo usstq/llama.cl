@@ -10,7 +10,8 @@ void rope_embed(tensor& x, tensor inv_freq, int position_id) {
   auto H = x.size(1);
   auto L = x.size(2);
   auto S = x.size(3);
-  //std::cout << x.stride(0) << ","<< x.stride(1) << ","<< x.stride(2) << ","<< x.stride(3) << "\n";
+  //std::cout << "       x: " << x.repr(false) << "\n";
+  //std::cout << "inv_freq: " << inv_freq.repr(false) << "\n";
   auto half_ro_ndims = inv_freq.size(0);
   auto* ifreq = inv_freq.data<float>();
   parallel_nt(0, B * H, 0, [&](int64_t bh0, int64_t bh1) {
