@@ -128,6 +128,9 @@ struct tensor {
     } else if (tinfo == typeid(int64_t)) {
       m_item_size = sizeof(int64_t);
       m_format = "q";
+    } else if (tinfo == typeid(long)) {
+      m_item_size = sizeof(long);
+      m_format = "l";
     } else {
       throw_rt_error("Unsupported type_info : ", tinfo.name());
       return;

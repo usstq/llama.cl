@@ -169,6 +169,8 @@ void embedding(tensor output, tensor input, tensor weight) {
 
   if (input.is<int32_t>()) {
     _embedding_template<int32_t>(output, input, weight);
+  } else if (input.is<long>()) {
+    _embedding_template<long>(output, input, weight);
   } else {
     _embedding_template<int64_t>(output, input, weight);
   }
