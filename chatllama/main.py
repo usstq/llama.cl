@@ -69,6 +69,9 @@ class KVCache:
             self.beam_table[b,:] = b
         self.verbose = verbose
 
+    def size(self):
+        return self.cache.numel() * self.cache.element_size()
+
     # the early stop check is vital to guarantee meaningful response
     # because instruction (surrounded by [INST][/INST]) is required
     # to produce meaningful response. 
@@ -155,12 +158,18 @@ class llmop_fc_q4a(object):
         self.weight = llmops.offline_FC_quant_Q4A(to_lt(linear.weight))
         self.bias = to_lt(linear.bias) if linear.bias else None
         self.N = linear.weight.shape[0]
-    
+
     def __call__(self, input):
         out = llmops.fc_Q4A(input, self.weight, self.N)
         if self.bias:
             llmops.iadd(out, self.bias)
         return out
+
+    def weight_size(self):
+        size = self.weight.numel() * self.weight.item_size
+        if self.bias:
+            size += self.bias.numel() * self.bias.item_size
+        return size
 
     def __repr__(self):
         return f"llmop_fc_q4a(weight: {self.weight.shape})"
@@ -288,9 +297,16 @@ class Model(nn.Module):
         for k, v in self.configs.items():
             ret += f'\t {k}: {v}\n'
         ret += "OPs:\n"
-        ret += json.dumps(self.op_dict, indent=4, default=str)
+        ret += json.dumps(self.op_dict, indent=4, default=str) + "\n"
         return ret
 
+    def get_fc_weight_size(self):
+        size = 0
+        for ops in self.op_dict['layers']:
+            for layer in ops:
+                if isinstance(ops[layer], llmop_fc_q4a):
+                    size += ops[layer].weight_size()
+        return size
     # kv cache is not part of the model since it:
     #  - has non-const big tensor
     #  - is per session instead of per-model
@@ -354,12 +370,15 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
 
     if max_kv_len > model.configs["max_position_embeddings"]:
         max_kv_len = model.configs["max_position_embeddings"]
-    print(f"max_kv_len = {max_kv_len}")
 
     batch_size = 1
     kv_cache = KVCache(model.configs, batch_size, max_kv_len, verbose)
     next_tokens = None
     sentence_id = 0
+    print(model)
+    print(f">>>>   fc weights : {model.get_fc_weight_size()/1e9:.2f} GB (1GB = 1,000,000,000 Bytes)")
+    print(f">>>> kvcache size : {kv_cache.size()/1e9:.2f} GB   with max_kv_len {max_kv_len}")
+    print(f">>>>          rss : {psutil.Process().memory_info().rss/(1e9):.2f} GB")
 
     with torch.no_grad():
         sys_msg = system_message
@@ -467,8 +486,6 @@ def main():
         model.load(args.model)
 
     print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")
-    print(model)
-
     print(f"to device {args.device} ... ")
 
     simple_chat_pipeline(model, args.prompt, args.kv_len, args.sys, args.verbose)

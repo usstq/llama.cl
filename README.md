@@ -29,6 +29,9 @@ cmake.exe --build . --config Release --verbose
 :: Intel compiler usually introduces additional dependencies on :
 ::    - libmmd.dll/libiomp5md.dll   oneAPI/compiler/latest/windows/redist/intel64_win/compiler
 ::    - sycl6.dll                   oneAPI/compiler/2023.2.1/windows/bin
+
+:: analyze performance with viztracer (view result.json inside chrome://tracing/)
+numactl -C0,2,4,6,8,10,12,14 python -m viztracer ./chatllama/main.py Hello
 ```
 
 ## Download models:
