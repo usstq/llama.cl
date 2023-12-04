@@ -6,6 +6,7 @@ import psutil
 import json
 import time
 import math
+import tqdm
 
 import torch
 import torch.nn.functional as F
@@ -13,6 +14,7 @@ from torch import nn
 import numpy
 
 from transformers import AutoTokenizer, TextStreamer
+from transformers import AutoModelForCausalLM
 
 # intel compiler introduced dependency :  libmmd.dll    libiomp5md.dll
 if sys.platform == 'win32':
@@ -223,7 +225,6 @@ class Model(nn.Module):
 
         print(f"load config/weight from HF model {path} ...")
         beg = time.time()
-        from transformers import AutoModelForCausalLM
         hf_model = AutoModelForCausalLM.from_pretrained(path, trust_remote_code=True).to('cpu').eval()
 
         assert(hf_model.config.num_key_value_heads == hf_model.config.num_attention_heads)
@@ -449,6 +450,34 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
             if org_prompt:
                 break
 
+class PPL:
+    def __init__(self):
+        self.nll = 0
+        self.cnt = 0
+    
+    def __call__(self, all_logits, labels):
+        '''
+            all_logits [seq_length, vocab_size]
+            labels [seq_length]
+        '''
+        seq_length = all_logits.shape[0]
+        for i in range(0, seq_length - 1):
+            logits = all_logits[i, :]
+            max_logit = numpy.amax(logits)
+            sum_exp = numpy.sum(numpy.exp(logits - max_logit))
+
+            # logits at time-step i is for predicting token at time-step (i+1)
+            next_tok = labels[i + 1]
+            log_softmax_of_tok = (logits[next_tok] - max_logit) - numpy.log(sum_exp)
+
+            self.nll += -log_softmax_of_tok
+            self.cnt += 1
+        return numpy.exp(self.nll / self.cnt)
+
+    def __str__(self):
+        return f"PPL: {numpy.exp(self.nll / self.cnt):.2f}"
+
+
 def main():
     parser = argparse.ArgumentParser('')
 
@@ -456,7 +485,7 @@ def main():
         if not os.path.exists(arg) and isinstance(arg, str):
             return arg
         else:
-            return open(arg, 'r').read()
+            return open(arg, 'r', encoding="utf8").read()
 
     # /home/tingqian/models/chinese-alpaca-2-1.3b-hf
     # C:/Users/tingqian/Syncplicity/LTQ/Models/chinese-alpaca-2-1.3b-hf
@@ -465,6 +494,7 @@ def main():
     parser.add_argument('-q', '--quant', type=str)
     parser.add_argument('--save', action="store_true")
     parser.add_argument('--sys', type=lambda x: is_valid_file(parser, x), default=None)
+    parser.add_argument('--ppl', type=lambda x: is_valid_file(parser, x), default=None)
     parser.add_argument('--kv-len', type=int, default=2048)
     parser.add_argument('-v', '--verbose', action="store_true")
     parser.add_argument('-d', '--device', default="cpu")
@@ -473,6 +503,40 @@ def main():
     args = parser.parse_args()
 
     model = Model()
+
+    if args.ppl:
+        if args.hf_model:
+            tokenizer = AutoTokenizer.from_pretrained(args.hf_model, trust_remote_code=True)
+            if tokenizer.pad_token is None:
+                tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+                #tokenizer.pad_token = tokenizer.eos_token_id
+            tokenizer.padding_side = "left"             # pad to left
+            hf_model = AutoModelForCausalLM.from_pretrained(args.hf_model, trust_remote_code=True).to('cpu').eval()
+        else:
+            model.load(args.model)
+            tokenizer = model.tokenizer
+
+        print("tokenizing ...")
+        inputs = tokenizer(args.ppl, return_tensors="pt", return_token_type_ids=False)
+        input_ids = inputs['input_ids']
+
+        ppl_evaluator = PPL()
+        progress_bar = tqdm.tqdm(range(0, input_ids.shape[1], 512))
+        for i0 in progress_bar:
+            input_ids_chunks = input_ids[:, i0:(i0+512)]
+            input_ids_chunks[:, 0] = 1
+            with torch.no_grad():
+                if args.hf_model:
+                    result = hf_model.forward(input_ids_chunks, labels = input_ids_chunks, return_dict=True)
+                    #print(f"ppl = {torch.exp(result.loss)}")
+                    logits = result.logits.numpy()
+                else:
+                    assert False
+                seq_len = logits.shape[1]
+                ppl_evaluator(logits[0, seq_len//2:, :], input_ids_chunks.numpy()[0, seq_len//2:])
+            progress_bar.set_description(f"{ppl_evaluator}")
+
+        return
 
     if args.sys:
         print(f"<<SYS>> prompt : \033[0;32m\n{args.sys}\n\033[00m")
