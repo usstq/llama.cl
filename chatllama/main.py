@@ -84,7 +84,7 @@ class KVCache:
             print(f"qlen={query_len}, sid={sentence_id}, slot={self.cur_slot}")
 
         cur_slot = self.cur_slot
-        self.slots = torch.empty(query_len, dtype=torch.long)
+        self.slots = torch.empty(query_len, dtype=torch.int32)
         for k in range(query_len):
             # skip cache slot reserved for system message
             while self.mask[cur_slot] < 0:

@@ -18,9 +18,13 @@ static inline void throw_rt_error(Args&&... args) {
   throw std::runtime_error(ss.str());
 }
 
+static inline std::string file_line_no(const char * file, int line_no) {
+    return std::string(file) + ":" + std::to_string(line_no);
+}
+
 #define ASSERT(condition)                                                      \
   if (!(condition)) {                                                          \
-    throw_rt_error("assert", #condition, "failed at", __FILE__, ":", __LINE__, \
+    throw_rt_error("assert", #condition, "failed at", file_line_no(__FILE__, __LINE__), \
                    "  ");                                                      \
   }
 

@@ -10,24 +10,25 @@
 
 namespace py = pybind11;
 
-tensor from_buffer(py::buffer b, bool copy = false) {
+tensor from_array(py::array b, bool copy = false) {
   py::buffer_info info = b.request();
   tensor ret;
+  auto dtype = b.dtype();
   void* src_ptr = copy ? nullptr : info.ptr;
-  if (info.format == py::format_descriptor<float>::format()) {
+  if (dtype.is(dtype.of<float>())) {
     ret.reset(reinterpret_cast<float*>(src_ptr), info.shape, info.strides);
-  } else if (info.format == py::format_descriptor<int32_t>::format()) {
+  } else if (dtype.is(dtype.of<int32_t>())) {
     ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
-  } else if (info.format == py::format_descriptor<int>::format()) {
+  } else if (dtype.is(dtype.of<int>())) {
     ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
-  } else if (info.format == py::format_descriptor<long>::format() || info.format == "l") {
+  } else if (dtype.is(dtype.of<long>())) {
     ret.reset(reinterpret_cast<long*>(src_ptr), info.shape, info.strides);
-  } else if (info.format == py::format_descriptor<long long>::format()) {
+  } else if (dtype.is(dtype.of<int64_t>())) {
     ret.reset(reinterpret_cast<int64_t*>(src_ptr), info.shape, info.strides);
-  } else if (info.format == py::format_descriptor<int8_t>::format()) {
+  } else if (dtype.is(dtype.of<int8_t>())) {
     ret.reset(reinterpret_cast<int8_t*>(src_ptr), info.shape, info.strides);
   } else {
-    throw_rt_error("Unsupported python struct format: ", info.format);
+    throw_rt_error("Unsupported numpy dtype: ", dtype, dtype.is(dtype.of<float>()));
   }
   if (copy) {
     ASSERT(ret.is_dense());
@@ -108,7 +109,7 @@ PYBIND11_MODULE(llmops, m) {
             strides_in_bytes /* Strides (in bytes) for each index */
         );
       })
-      .def(py::init([](py::buffer b) { return from_buffer(b); }))
+      .def(py::init([](py::array b) { return from_array(b); }))
       .def_property_readonly("shape", &tensor::shape<int64_t>)
       .def_property_readonly("strides", &tensor::strides<int64_t>)
       .def_property_readonly("item_size", &tensor::item_size)
@@ -130,7 +131,7 @@ PYBIND11_MODULE(llmops, m) {
             return py::make_tuple(to_numpy(p));
           },
           [](py::tuple t) {  // __setstate__
-            return from_buffer(t[0].cast<py::array>(), true);
+            return from_array(t[0].cast<py::array>(), true);
           }))
       .def("__getitem__", [](tensor& t, py::tuple index) {
         // return a tensor view (even a single element indexing is also a

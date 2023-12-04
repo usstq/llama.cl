@@ -52,7 +52,8 @@ void attention_rope(tensor q,          // [B, qL, H*S]
   ASSERT(k.is<float>(3));
   ASSERT(v.is<float>(3));
   ASSERT(kv_cache.is<float>(5));
-  ASSERT(kvc_slots.is<long>(1));
+  //std::cout << kvc_slots.repr() << std::endl;
+  ASSERT(kvc_slots.is<int32_t>(1));
 
   auto B = q.size(0);
   auto qL = q.size(1);
@@ -76,7 +77,7 @@ void attention_rope(tensor q,          // [B, qL, H*S]
   rope_embed(k, inv_freq, position_id);
 
   // put k/v into cache
-  auto* slots = kvc_slots.data<long>();
+  auto* slots = kvc_slots.data<int32_t>();
   parallel_nt(0, B * H * qL, 0, [&](int64_t bhl0, int64_t bhl1) {
     for (auto bhl = bhl0; bhl < bhl1; bhl++) {
       auto pk = bhl % qL;
