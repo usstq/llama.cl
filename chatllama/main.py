@@ -477,6 +477,43 @@ class PPL:
     def __str__(self):
         return f"PPL: {numpy.exp(self.nll / self.cnt):.2f}"
 
+def measure_perplexity(args):
+    if args.hf_model:
+        tokenizer = AutoTokenizer.from_pretrained(args.hf_model, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            #tokenizer.pad_token = tokenizer.eos_token_id
+        tokenizer.padding_side = "left"             # pad to left
+        hf_model = AutoModelForCausalLM.from_pretrained(args.hf_model, trust_remote_code=True).to('cpu').eval()
+    else:
+        model = Model()
+        model.load(args.model)
+        tokenizer = model.tokenizer
+        batch_size = 1
+        max_kv_len = 1024
+        kv_cache = torch.zeros(model.configs["layer_num"] * 2, batch_size, model.configs["head_num"], max_kv_len, model.configs["head_size"], dtype=torch.float32)
+
+    print("tokenizing ...")
+    inputs = tokenizer(args.ppl, return_tensors="pt", return_token_type_ids=False)
+    input_ids = inputs['input_ids']
+
+    ppl_evaluator = PPL()
+    progress_bar = tqdm.tqdm(range(0, input_ids.shape[1], 512))
+    for i0 in progress_bar:
+        input_ids_chunks = input_ids[:, i0:(i0+512)]
+        input_ids_chunks[:, 0] = 1
+        with torch.no_grad():
+            if args.hf_model:
+                result = hf_model.forward(input_ids_chunks, labels = input_ids_chunks, return_dict=True)
+                #print(f"ppl = {torch.exp(result.loss)}")
+                logits = result.logits.numpy()
+            else:
+                kv_cache_slots = torch.arange(0, input_ids_chunks.shape[1], dtype=torch.int32)
+                logits = model.forward(input_ids_chunks, kv_cache, kv_cache_slots, position_id=0).numpy()
+
+            seq_len = logits.shape[1]
+            ppl_evaluator(logits[0, seq_len//2:, :], input_ids_chunks.numpy()[0, seq_len//2:])
+        progress_bar.set_description(f"{ppl_evaluator}")
 
 def main():
     parser = argparse.ArgumentParser('')
@@ -502,42 +539,11 @@ def main():
     
     args = parser.parse_args()
 
-    model = Model()
-
     if args.ppl:
-        if args.hf_model:
-            tokenizer = AutoTokenizer.from_pretrained(args.hf_model, trust_remote_code=True)
-            if tokenizer.pad_token is None:
-                tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-                #tokenizer.pad_token = tokenizer.eos_token_id
-            tokenizer.padding_side = "left"             # pad to left
-            hf_model = AutoModelForCausalLM.from_pretrained(args.hf_model, trust_remote_code=True).to('cpu').eval()
-        else:
-            model.load(args.model)
-            tokenizer = model.tokenizer
-
-        print("tokenizing ...")
-        inputs = tokenizer(args.ppl, return_tensors="pt", return_token_type_ids=False)
-        input_ids = inputs['input_ids']
-
-        ppl_evaluator = PPL()
-        progress_bar = tqdm.tqdm(range(0, input_ids.shape[1], 512))
-        for i0 in progress_bar:
-            input_ids_chunks = input_ids[:, i0:(i0+512)]
-            input_ids_chunks[:, 0] = 1
-            with torch.no_grad():
-                if args.hf_model:
-                    result = hf_model.forward(input_ids_chunks, labels = input_ids_chunks, return_dict=True)
-                    #print(f"ppl = {torch.exp(result.loss)}")
-                    logits = result.logits.numpy()
-                else:
-                    assert False
-                seq_len = logits.shape[1]
-                ppl_evaluator(logits[0, seq_len//2:, :], input_ids_chunks.numpy()[0, seq_len//2:])
-            progress_bar.set_description(f"{ppl_evaluator}")
-
+        measure_perplexity(args)
         return
 
+    model = Model()
     if args.sys:
         print(f"<<SYS>> prompt : \033[0;32m\n{args.sys}\n\033[00m")
 

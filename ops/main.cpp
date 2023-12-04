@@ -13,22 +13,21 @@ namespace py = pybind11;
 tensor from_array(py::array b, bool copy = false) {
   py::buffer_info info = b.request();
   tensor ret;
-  auto dtype = b.dtype();
   void* src_ptr = copy ? nullptr : info.ptr;
-  if (dtype.is(dtype.of<float>())) {
+  if (py::isinstance<py::array_t<float>>(b)) {
     ret.reset(reinterpret_cast<float*>(src_ptr), info.shape, info.strides);
-  } else if (dtype.is(dtype.of<int32_t>())) {
+  } else if (py::isinstance<py::array_t<int>>(b)) {
     ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
-  } else if (dtype.is(dtype.of<int>())) {
+  } else if (py::isinstance<py::array_t<int32_t>>(b)) {
     ret.reset(reinterpret_cast<int32_t*>(src_ptr), info.shape, info.strides);
-  } else if (dtype.is(dtype.of<long>())) {
+  } else if (py::isinstance<py::array_t<long>>(b)) {
     ret.reset(reinterpret_cast<long*>(src_ptr), info.shape, info.strides);
-  } else if (dtype.is(dtype.of<int64_t>())) {
+  } else if (py::isinstance<py::array_t<int64_t>>(b)) {
     ret.reset(reinterpret_cast<int64_t*>(src_ptr), info.shape, info.strides);
-  } else if (dtype.is(dtype.of<int8_t>())) {
+  } else if (py::isinstance<py::array_t<int8_t>>(b)) {
     ret.reset(reinterpret_cast<int8_t*>(src_ptr), info.shape, info.strides);
   } else {
-    throw_rt_error("Unsupported numpy dtype: ", dtype, dtype.is(dtype.of<float>()));
+    throw_rt_error("Unsupported numpy dtype: ", b.dtype());
   }
   if (copy) {
     ASSERT(ret.is_dense());
