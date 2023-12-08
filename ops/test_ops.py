@@ -323,7 +323,7 @@ def test_mha():
     # [2, B, H, max_length, S]
     kv_cache = torch.rand(2, B, H, max_length, S)
     # [qL]
-    kv_cache_slots = torch.arange(cur_kv_len, cur_kv_len + qL)
+    kv_cache_slots = torch.arange(cur_kv_len, cur_kv_len + qL, dtype = torch.int32)
 
     position_id = cur_kv_len
     layer_idx = 0

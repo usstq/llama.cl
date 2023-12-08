@@ -2,7 +2,7 @@
 
 #include <omp.h>
 #include <stdint.h>
-
+#include <string>
 //=================================================================================
 inline int64_t divup(int64_t x, int64_t y) {
   return (x + y - 1) / y;
@@ -48,6 +48,20 @@ inline void splitter(const T& n, const Q& team, const Q& tid, T& n_start, T& n_e
 
     n_end += n_start;
 }
+//=================================================================================
+
+template<typename T>
+struct Env {
+    T value;
+    Env(const char * name, T default_v) : value(default_v) {
+        if (std::getenv(name)) {
+            std::string strv(std::getenv(name));
+            auto ll = std::stod(strv, nullptr);
+            value = static_cast<T>(ll);
+        }
+        std::cout << "Env\t\033[1;33m" << name << " = " << value << "\033[00m" << std::endl;
+    }
+};
 
 //=================================================================================
 #ifdef _WIN32

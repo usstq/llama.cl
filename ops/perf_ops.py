@@ -22,7 +22,7 @@ def to_lt(a):
 def to_torch(a):
     return torch.from_numpy(numpy.array(a, copy=False))
 
-def test_mha(past_kv_len, cur_seq_len):
+def test_mha(past_kv_len, cur_seq_len, repeats = 100):
     #  [B, qL, H*S]
     B = 1
     qL = cur_seq_len
@@ -44,7 +44,7 @@ def test_mha(past_kv_len, cur_seq_len):
     # [2, B, H, max_length, S]
     kv_cache = torch.rand(2*num_layers, B, H, max_length, S)
     # [qL]
-    kv_cache_slots = torch.arange(past_kv_len, past_kv_len + qL)
+    kv_cache_slots = torch.arange(past_kv_len, past_kv_len + qL, dtype=torch.int32)
 
     position_id = past_kv_len
 
@@ -53,25 +53,27 @@ def test_mha(past_kv_len, cur_seq_len):
     lt_key = to_lt(key_states).clone()
     lt_value = to_lt(value_states).clone()
 
-    repeats = 100
     t0 = time.time()
     for r in range(repeats):
         for layer_idx in range(num_layers):
             llmops.attention_rope(lt_out, lt_key, lt_value, to_lt(inv_freq), lt_kv_cache, to_lt(kv_cache_slots), position_id, layer_idx)
     t1 = time.time()
     
-    latency = (t1-t0)/repeats
-    print(f" latency   : {latency * 1e3 : .1f} ms")
+    latency = (t1-t0)/(repeats * num_layers)
+    kv_size_1layer = 2* B * H * (past_kv_len + qL) * S * kv_cache.element_size()
 
-    kv_size = 2*num_layers * B * H * (past_kv_len + qL) * S * kv_cache.element_size()
-    print(f" bandwidth : {kv_size/latency/1e9 : .1f} GB/s  (1GB=1,000,000,000 Bytes)")
+    print(f"{past_kv_len}+{qL}\t:  x{repeats * num_layers}  {latency * 1e3 : .1f} ms   q-size:{query_states.numel() * query_states.element_size()/1e6:.1f}MB  kv-size:{kv_size_1layer/1e6:.1f}MB  {kv_size_1layer/latency/1e9 : .1f} GB/s  (1GB=1,000,000,000 Bytes)")
+
 
 if __name__ == '__main__':
-    test_mha(15, 1)
-    test_mha(31, 1)
-    test_mha(63, 1)
-    test_mha(127, 1)
-    test_mha(255, 1)
-    test_mha(511, 1)
-    test_mha(1023, 1)
-    test_mha(2047, 1)
+
+    test_mha(31, 1, 10)
+    test_mha(511, 1, 10)
+    test_mha(2047, 1, 10)
+    
+    #test_mha(0, 32, 100)
+    #test_mha(0, 64, 10)
+    test_mha(0, 128, 2)
+    test_mha(0, 256, 2)
+    test_mha(0, 512, 2)
+    test_mha(0, 1024, 2)

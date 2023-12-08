@@ -41,7 +41,7 @@ endif (MSVC)
 
 add_subdirectory(pybind11)
 
-pybind11_add_module(llmops main.cpp)
+pybind11_add_module(llmops main.cpp profiler.cpp)
 
 # EXAMPLE_VERSION_INFO is defined by setup.py and passed into the C++ code as a
 # define (VERSION_INFO) here.

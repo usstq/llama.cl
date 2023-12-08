@@ -4,3 +4,4 @@ transformers>=4.31.0
 psutil
 viztracer
 tqdm
+pytest
