@@ -10,10 +10,12 @@ pip install -r requirements.txt
 
 ## build using Intel Compiler
 
+> ref: https://www.intel.com/content/www/us/en/developer/articles/guide/porting-guide-for-icc-users-to-dpcpp-or-icx.html
+
 ```bat
 :: linux
 source /opt/intel/oneapi/setvars.sh
-CXX=icx cmake ..
+CC=icx CXX=icpx cmake ..
 
 :: windows: using cmd.exe instead of PS, (Ninja is required for Intel Compiler to work correctly)
 "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64 vs2022

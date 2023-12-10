@@ -79,6 +79,10 @@ def test_qk(mm_qk_kernel, qL, kvLen, repeats=100):
     ref = (q2 @ kcache.permute(0,1,3,2)).numpy()
     act = mm_qk_kernel(to_lt(q), to_lt(kcache)).numpy()
 
+    if not numpy.allclose(ref, act):
+        print("ref=", ref)
+        print("act=", act)
+
     assert numpy.allclose(ref, act)
 
     t0 = time.time()
@@ -132,4 +136,4 @@ def main_qk(mm_qk_kernels):
 
 if __name__ == '__main__':
     #main()
-    main_qk((llmops.mm_qk, llmops.mm_qk2, llmops.mm_qk42, llmops.mm_qk24))
+    main_qk((llmops.mm_qk, llmops.mm_qk2, llmops.mm_qk42, llmops.mm_qk24, llmops.onednn_qk))
