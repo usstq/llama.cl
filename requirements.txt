@@ -5,3 +5,5 @@ psutil
 viztracer
 tqdm
 pytest
+onednn-cpu-iomp
+onednn-devel-cpu-iomp

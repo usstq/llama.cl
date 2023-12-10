@@ -7,6 +7,7 @@
 #include "op_fc.hpp"
 #include "op_attn.hpp"
 #include "op_misc.hpp"
+#include "op_onednn.hpp"
 
 namespace py = pybind11;
 
@@ -153,5 +154,10 @@ PYBIND11_MODULE(llmops, m) {
   m.def("offline_FC_dequant_Q4A", &offline_FC_dequant_Q4A);
   m.def("fc_Q4A", &fc_Q4A);
 
+  m.def("mm_qk", &mm_qk);
+  m.def("mm_qk2", &mm_qk2);
+  m.def("mm_qk42", &mm_qk42);
+  m.def("mm_qk24", &mm_qk24);
+  
   //m.def("syclmain", &syclmain);
 }

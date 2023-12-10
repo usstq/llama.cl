@@ -64,11 +64,43 @@ def test_mha(past_kv_len, cur_seq_len, repeats = 100):
 
     print(f"{past_kv_len}+{qL}\t:  x{repeats * num_layers}  {latency * 1e3 : .1f} ms   q-size:{query_states.numel() * query_states.element_size()/1e6:.1f}MB  kv-size:{kv_size_1layer/1e6:.1f}MB  {kv_size_1layer/latency/1e9 : .1f} GB/s  (1GB=1,000,000,000 Bytes)")
 
+def test_qk(mm_qk_kernel, qL, kvLen, repeats=100):
+    B = 1
+    H = 32
+    S = 128
+    num_layers = 32
+    
+    q = torch.rand(B, qL, H*S)
+    kcache = torch.rand(B, H, kvLen, S)
 
-if __name__ == '__main__':
+    q2 = q.view(B, qL, H, S).permute(0,2,1,3) * (1/(S**0.5))
+
+    # accuracy & warm-up
+    ref = (q2 @ kcache.permute(0,1,3,2)).numpy()
+    act = mm_qk_kernel(to_lt(q), to_lt(kcache)).numpy()
+
+    assert numpy.allclose(ref, act)
+
+    t0 = time.time()
+    for r in range(repeats):
+        mm_qk_kernel(to_lt(q), to_lt(kcache))
+    t1 = time.time()
+    latency = (t1-t0)/repeats
+
+    MAdds_per_sec = (S * B * H * qL * kvLen)/latency
+    print(f"{mm_qk_kernel.__name__:8} S:{S} qL: {qL:6}  kvLen: {kvLen:6}  {latency * 1e3 : 6.1f} ms  q:{q.numpy().nbytes/1e6:6.1f} MB  k:{kcache.numpy().nbytes/1e6:6.1f} MB   attn:{act.nbytes/1e6:6.1f} MB  MAdds: {MAdds_per_sec/1e9:.1f}G/s" )
+
+def main():
+    # warm-up
+    test_mha(2047, 1, 1)
+    test_mha(1023, 1, 10)
+    test_mha(1024-8, 8, 10)
+    return
+    
 
     test_mha(31, 1, 10)
     test_mha(511, 1, 10)
+    test_mha(1023, 1, 10)
     test_mha(2047, 1, 10)
     
     #test_mha(0, 32, 100)
@@ -77,3 +109,27 @@ if __name__ == '__main__':
     test_mha(0, 256, 2)
     test_mha(0, 512, 2)
     test_mha(0, 1024, 2)
+
+
+def main_qk(mm_qk_kernels):
+    for ker in mm_qk_kernels:
+        test_qk(ker, 8, 2048, 10)
+
+    for ker in mm_qk_kernels:
+        test_qk(ker, 32, 2048, 10)
+
+    for ker in mm_qk_kernels:
+        test_qk(ker, 1024, 2048, 10)
+
+    for ker in mm_qk_kernels:
+        test_qk(ker, 2048, 2048, 10)
+    return
+
+    test_qk(32, 32, 10)
+    test_qk(128, 128, 10)
+    test_qk(1024, 1024, 10)
+    test_qk(2048, 2048, 10)
+
+if __name__ == '__main__':
+    #main()
+    main_qk((llmops.mm_qk, llmops.mm_qk2, llmops.mm_qk42, llmops.mm_qk24))
