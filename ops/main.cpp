@@ -148,6 +148,7 @@ PYBIND11_MODULE(llmops, m) {
   m.def("rope_embed", &rope_embed);
   m.def("softmax", &softmax);
   m.def("attention_rope", &attention_rope);
+  m.def("attention_rope2", &attention_rope2);
   m.def("clone", [](const tensor& p) { return clone(p); });
 
   m.def("offline_FC_quant_Q4A", &offline_FC_quant_Q4A);
@@ -155,11 +156,10 @@ PYBIND11_MODULE(llmops, m) {
   m.def("fc_Q4A", &fc_Q4A);
 
   m.def("mm_qk", &mm_qk);
-  m.def("mm_qk2", &mm_qk2);
   m.def("mm_qk42", &mm_qk42);
   m.def("mm_qk24", &mm_qk24);
+  m.def("mm_qk81", &mm_qk81);
   m.def("onednn_qk", &onednn_qk);
-  
-  
+
   //m.def("syclmain", &syclmain);
 }
