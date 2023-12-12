@@ -867,17 +867,18 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
                 // total length in q is not enough to retreat
                 // will compute in block size 1
                 pq++;
-                q_ptr_base += q_stride;
                 pw_base += w_stride;
+                q_ptr_base += q_stride;
             } else {
-                // move by 4 will overflow, retreat back (when q length is enough)
-                auto step = 4;
-                if (pq + step > q_len) {
-                    step = (q_len - step) - pq;
+                pq += 4;
+                pw_base += 4 * w_stride;
+                q_ptr_base += 4 * q_stride;
+                // next round with step will overflow, retreat back (when q length is enough)
+                if (pq + 4 > q_len) {
+                    auto back_steps = (pq + 4) - q_len;
+                    pw_base -= back_steps * w_stride;
+                    q_ptr_base -= back_steps * q_stride;
                 }
-                pq += step;
-                q_ptr_base += step * q_stride;
-                pw_base += step * w_stride;
             }
         }
     };
@@ -945,14 +946,15 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
                 w_ptr_base += w_stride;
                 d_ptr_vase += d_stride;
             } else {
-                // move by 4 will overflow, retreat back (when q length is enough)
-                auto step = 4;
-                if (pq + step > q_len) {
-                    step = (q_len - step) - pq;
+                pq += 4;
+                w_ptr_base += 4 * w_stride;
+                d_ptr_vase += 4 * d_stride;
+                // next round with step will overflow, retreat back (when q length is enough)
+                if (pq + 4 > q_len) {
+                    auto back_steps = (pq + 4) - q_len;
+                    w_ptr_base -= back_steps * w_stride;
+                    d_ptr_vase -= back_steps * d_stride;
                 }
-                pq += step;
-                w_ptr_base += step * w_stride;
-                d_ptr_vase += step * d_stride;
             }
         }
     };
@@ -977,6 +979,15 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
                     auto pk1 = pk0 + block_k;
                     if (pk1 > kvLen)
                         pk1 = kvLen;
+                    
+                    // check if the whole [block_q x block_k] block is casual masked
+                    // 
+                    for (int64_t pq = pq0; pq < pq1; pq++) {
+                        auto* pw = &attn_w.at<float>({pq - pq0, 0});
+                        for (int64_t pk = pq + 1; pk < qL; pk++) {
+                            
+                        }
+                    }
                     qk_kernel_4x2(&q.at<float>({b, h, pq0, 0}),
                                   q.stride(2),
                                   &kcache.at<float>({b, h, pk0, 0}),
@@ -999,21 +1010,10 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
                 // attn : [block_q, kvLen]
                 // v    : [kvLen, S]
                 // out  : [block_q, S]
-                /*
-                for (int64_t pq = pq0; pq < pq1; pq++) {
-                    auto* dst = &q.at<float>({b, h, pq, 0});
-                    memset(dst, 0, S * sizeof(dst[0]));
-                    for (int64_t pv = 0; pv < kvLen; pv++) {
-                        auto weight = attn_w.at<float>({pq - pq0, pv});
-                        auto* v = &vcache.at<float>({b, h, pv, 0});
-                        accumulate_weighted_v(dst, weight, v, S);
-                    }
-                }
-                */
                 wv_kernel_4x16(&attn_w.at<float>({0, 0}),
-                               kvLen,
+                               attn_w.stride(0),
                                &vcache.at<float>({b, h, 0, 0}),
-                               S,
+                               vcache.stride(2),
                                &q.at<float>({b, h, pq0, 0}),
                                q.stride(2),
                                pq1 - pq0,

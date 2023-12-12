@@ -129,9 +129,15 @@ def test_mha(kernel, past_kv_len, cur_seq_len, repeats, test_acc = False):
     
     latency = (t1-t0)/(repeats * num_layers)
     kv_size_1layer = 2* B * H * (past_kv_len + qL) * S * kv_cache.element_size()
+    q_size_1layer = query_states.numel() * query_states.element_size()
+
+    kvLen = past_kv_len + qL
+    MAdds_per_sec = B * H * (S*qL*kvLen + qL*S*kvLen)/float(latency)
 
     length_info = f"{past_kv_len}+{qL}"
-    print(f"{kernel.__name__:18} {length_info:8}  x{repeats * num_layers}  {latency * 1e3 : .1f} ms   q-size:{query_states.numel() * query_states.element_size()/1e6:.1f}MB  kv-size:{kv_size_1layer/1e6:.1f}MB  {kv_size_1layer/latency/1e9 : .1f} GB/s  (1GB=1,000,000,000 Bytes)   {note}")
+    print(f"{kernel.__name__:18} {length_info:8}  x{repeats * num_layers:5}  {latency * 1e3:7.3f} ms "
+          f" q-size:{q_size_1layer/1e6:6.2f}MB  kv-size:{kv_size_1layer/1e6:6.2f}MB "
+          f" MemBW: {(q_size_1layer + kv_size_1layer)/latency/1e9:6.1f} GB/s MAdds: {MAdds_per_sec/1e9:6.1f}G/s {note}")
 
 class time_value:
     def __init__(self, t):
@@ -181,6 +187,7 @@ def test_qk(mm_qk_kernel, qL, kvLen, repeats=100):
     print(f"{mm_qk_kernel.__name__:10} S:{S} qL: {qL:6}  kvLen: {kvLen:6}  {latency}  q:{q.numpy().nbytes/1e6:6.1f} MB  k:{kcache.numpy().nbytes/1e6:6.1f} MB   attn:{act.nbytes/1e6:6.1f} MB  MAdds: {MAdds_per_sec/1e9:.1f}G/s {mm_qk_kernel.__name__:10} {note}" )
 
 def main():
+    
     # warm-up
     test_mha(31, 1, 10)
     test_mha(511, 1, 10)
@@ -212,13 +219,17 @@ def main_qk(mm_qk_kernels):
     test_qk(2048, 2048, 10)
 
 def main_mha(test_acc = True):
+    #test_mha(llmops.attention_rope2, 0, 1024, 1, True); return
+    #test_mha(llmops.attention_rope2, 0, 1025, 1, True)
+    #test_mha(llmops.attention_rope2, 0, 1023, 1, True); return
+    #test_mha(llmops.attention_rope2, 0, 1024, 2); return
     if test_acc:
         test_mha(llmops.attention_rope, 0, 32, 1, True)
-        #test_mha(llmops.attention_rope2, 30, 1, 1, True)
-        #test_mha(llmops.attention_rope2, 31, 1, 1, True)
+        test_mha(llmops.attention_rope2, 30, 1, 1, True)
+        test_mha(llmops.attention_rope2, 31, 1, 1, True)
         test_mha(llmops.attention_rope2, 0, 1024, 1, True)
-        #test_mha(llmops.attention_rope2, 0, 1022, 1, True)
-        #test_mha(llmops.attention_rope2, 0, 1023, 1, True)
+        test_mha(llmops.attention_rope2, 0, 1022, 1, True)
+        test_mha(llmops.attention_rope2, 0, 1023, 1, True)
         test_mha(llmops.attention_rope2, 0, 1025, 1, True)
         test_mha(llmops.attention_rope2, 0, 1026, 1, True)
 
@@ -240,9 +251,10 @@ def main_mha(test_acc = True):
     test_mha(llmops.attention_rope2, 2047, 1, 10)
 
 if __name__ == '__main__':
+    print("********* Note: 1GB=1,000,000,000 Bytes *********")
     #main()
     #main_qk((llmops.mm_qk, llmops.mm_qk42, llmops.mm_qk24, llmops.onednn_qk))
     #for ker in (llmops.mm_qk42, llmops.mm_qk81, llmops.onednn_qk): test_qk(ker, 8, 64, 10)
     #for ker in (llmops.mm_qk42, llmops.mm_qk81, llmops.onednn_qk): test_qk(ker, 16, 64, 10)
     #for ker in (llmops.mm_qk42, llmops.mm_qk81, llmops.onednn_qk): test_qk(ker, 256, 256, 1000)
-    main_mha(True)
+    main_mha(False)
