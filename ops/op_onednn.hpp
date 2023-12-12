@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#ifdef WITH_DNNL
+
 #include "oneapi/dnnl/dnnl.hpp"
 #include "tensor.hpp"
 #include "utils.hpp"
@@ -91,3 +93,4 @@ tensor onednn_qk(tensor q,      // [B, qL, H*S]
     mm.exec(q, kcache, attn_w);
     return attn_w;
 }
+#endif

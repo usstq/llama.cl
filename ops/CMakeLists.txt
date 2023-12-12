@@ -44,8 +44,14 @@ add_subdirectory(pybind11)
 pybind11_add_module(llmops main.cpp profiler.cpp)
 
 
-find_package(dnnl CONFIG REQUIRED)
-target_link_libraries(llmops PRIVATE DNNL::dnnl)
+find_package(dnnl CONFIG)
+IF (${dnnl_FOUND})
+   MESSAGE(STATUS "Found dnnl.")
+   target_link_libraries(llmops PRIVATE DNNL::dnnl)
+   add_compile_definitions(WITH_DNNL)
+ELSE (${dnnl_FOUND})
+   MESSAGE(STATUS "Could not locate dnnl.")
+ENDIF (${dnnl_FOUND})
 
 
 # EXAMPLE_VERSION_INFO is defined by setup.py and passed into the C++ code as a

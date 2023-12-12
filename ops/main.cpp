@@ -159,7 +159,8 @@ PYBIND11_MODULE(llmops, m) {
   m.def("mm_qk42", &mm_qk42);
   m.def("mm_qk24", &mm_qk24);
   m.def("mm_qk81", &mm_qk81);
+#ifdef WITH_DNNL
   m.def("onednn_qk", &onednn_qk);
-
+#endif
   //m.def("syclmain", &syclmain);
 }
