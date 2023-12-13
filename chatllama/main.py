@@ -332,7 +332,7 @@ class Model(nn.Module):
             v = ops['self_attn.v_proj'](input_layernorm)
 
             # q/k/v:[batch, seq_len, hiden_states]
-            llmops.attention_rope(q, k, v, self.inv_freq, kv_cache, kv_cache_slots, position_id, i)
+            llmops.attention_rope2(q, k, v, self.inv_freq, kv_cache, kv_cache_slots, position_id, i)
             #torch_attention_rope(q, k, v, self.inv_freq, kv_cache, kv_cache_slots, position_id, i)
 
             attn_output = ops['self_attn.o_proj'](q)
@@ -389,7 +389,12 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
                 inputs = tokenizer(f"[INST] <<SYS>> {sys_msg} <</SYS>> [/INST]", return_tensors="pt", padding=True, return_token_type_ids=False)
                 input_ids = inputs["input_ids"]
                 assert(kv_cache.prepare(input_ids.shape[1], -1, -1))
+                sys_tok_latency = time.time()
                 logits = model.forward(input_ids, kv_cache.cache, kv_cache.slots, kv_cache.position_id)
+                sys_tok_latency = time.time() - sys_tok_latency
+                print("\033[0;90m", f" position_id: {kv_cache.position_id_next}  latency: {sys_tok_latency*1e3:.2f} ms")
+                print("\033[00m")
+
                 sys_msg = None
 
             if org_prompt:

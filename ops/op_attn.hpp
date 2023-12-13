@@ -980,14 +980,6 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
                     if (pk1 > kvLen)
                         pk1 = kvLen;
                     
-                    // check if the whole [block_q x block_k] block is casual masked
-                    // 
-                    for (int64_t pq = pq0; pq < pq1; pq++) {
-                        auto* pw = &attn_w.at<float>({pq - pq0, 0});
-                        for (int64_t pk = pq + 1; pk < qL; pk++) {
-                            
-                        }
-                    }
                     qk_kernel_4x2(&q.at<float>({b, h, pq0, 0}),
                                   q.stride(2),
                                   &kcache.at<float>({b, h, pk0, 0}),
