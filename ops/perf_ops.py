@@ -186,6 +186,62 @@ def test_qk(mm_qk_kernel, qL, kvLen, repeats=100):
     MAdds_per_sec = (S * B * H * qL * kvLen)/float(latency)
     print(f"{mm_qk_kernel.__name__:10} S:{S} qL: {qL:6}  kvLen: {kvLen:6}  {latency}  q:{q.numpy().nbytes/1e6:6.1f} MB  k:{kcache.numpy().nbytes/1e6:6.1f} MB   attn:{act.nbytes/1e6:6.1f} MB  MAdds: {MAdds_per_sec/1e9:.1f}G/s {mm_qk_kernel.__name__:10} {note}" )
 
+def test_fc(kernel, B = 1, M = 1, N = 4096*3, K = 4096, repeats = 100):
+    #weight = torch.rand(N, K, dtype=torch.float32)
+    # weight can be perfected re-constructed by i4 quantization
+    # input can be perfected re-constructed by i8 quantization
+    print(f"**** test_fc  {kernel.__name__:6}   B,M,N,K={B},{M},{N},{K} ****")
+
+    weight = torch.randint(-8, 8, (N, K), dtype=torch.float32)
+    input = torch.randint(-127, 128, (B, M, K), dtype=torch.float32)
+    for k in range(0, K, 32):
+        weight[:, k] = -8
+        weight[:, k+1] = 7
+        input[:, :, k] = -127
+        input[:, :, k+1] = 127
+    weight = weight * (1/128)
+    input = input * (1/128)
+    #print(f"weight: {weight.dtype} {weight.shape}")
+    #print(f"input: {input.dtype} {input.shape}")
+
+    weight_q4a = llmops.offline_FC_quant_Q4A(to_lt(weight))
+    weight_dq4a = llmops.offline_FC_dequant_Q4A(weight_q4a).numpy()
+
+    ref = torch.nn.functional.linear(input, weight, None).numpy()
+    out = kernel(to_lt(input), weight_q4a, N).numpy()
+    weight = weight.numpy()
+
+    if not numpy.allclose(weight_dq4a, weight):
+        print(f"weight     ={weight[0,:]}")
+        print(f"weight_dq4a={weight_dq4a[0,:]}")
+        CSTR = ""
+        for k in range(K):
+            CSTR += "T" if numpy.allclose(weight_dq4a[:,k], weight[:,k]) else "F"
+        print(CSTR)
+
+    if numpy.allclose(ref, out):
+        note = "[allclose ok]"
+    else:
+        print(ref)
+        print(out)
+        for b in range(B):
+            for m in range(M):
+                print(f"{b} {m} amax abs diff = {numpy.amax(numpy.abs(ref[b, m, :] - out[b, m, :]))}  avg abs diff = {numpy.mean(numpy.abs(ref[b, m, :] - out[b, m, :]))}")
+        note = "[allclose failed]"
+    #assert numpy.allclose(ref, out)
+    all_weights = []
+    for i in range(100):
+        all_weights.append(weight_q4a.clone())
+    for r in range(repeats):
+        input_lt = to_lt(input)
+        t0 = time.time()
+        for i in range(100):
+            output = kernel(input_lt, all_weights[i%100], N)
+        dt = (time.time() - t0)/100
+        w_bytesize = weight_q4a.numel() * weight_q4a.item_size
+        MAdds_per_sec = ((B * M * N) * K)/dt 
+        print(f" weight:{w_bytesize/1e6:.1f} MB {dt*1e3:.3f} ms  Bound:{w_bytesize/1e9/dt:.1f} GB/s  {MAdds_per_sec/1e9:.1f} GMAdds/s  {note}")
+
 def main():
     
     # warm-up
@@ -257,4 +313,8 @@ if __name__ == '__main__':
     #for ker in (llmops.mm_qk42, llmops.mm_qk81, llmops.onednn_qk): test_qk(ker, 8, 64, 10)
     #for ker in (llmops.mm_qk42, llmops.mm_qk81, llmops.onednn_qk): test_qk(ker, 16, 64, 10)
     #for ker in (llmops.mm_qk42, llmops.mm_qk81, llmops.onednn_qk): test_qk(ker, 256, 256, 1000)
-    main_mha(False)
+    # main_mha(False)
+    #test_fc(llmops.fc_Q4A, M=1, repeats=4)
+    test_fc(llmops.fc_Q4A, M=1, N=32*8*16, K=4096, repeats=4)
+    #test_fc(llmops.fc_Q4A, M=2, N=32*8*16, K=4096, repeats=4)
+    #test_fc(llmops.fc_Q4A2, M=2, N=32*8*16, K=4096, repeats=4)

@@ -154,6 +154,7 @@ PYBIND11_MODULE(llmops, m) {
   m.def("offline_FC_quant_Q4A", &offline_FC_quant_Q4A);
   m.def("offline_FC_dequant_Q4A", &offline_FC_dequant_Q4A);
   m.def("fc_Q4A", &fc_Q4A);
+  m.def("fc_Q4A2", &fc_Q4A2);
 
   m.def("mm_qk", &mm_qk);
   m.def("mm_qk42", &mm_qk42);
@@ -162,5 +163,8 @@ PYBIND11_MODULE(llmops, m) {
 #ifdef WITH_DNNL
   m.def("onednn_qk", &onednn_qk);
 #endif
-  //m.def("syclmain", &syclmain);
+
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+  m.def("syclmain", &syclmain);
+#endif
 }

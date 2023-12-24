@@ -65,6 +65,9 @@ struct Env {
     std::cout << "Env\t\033[1;33m" << name << " = " << value << "\033[00m"
               << std::endl;
   }
+  bool operator==(T v) {
+    return value == v;
+  }
 };
 
 //=================================================================================
@@ -215,8 +218,7 @@ static inline void quant_row_q8_0(float* x, int8_t* qx, int len, float id) {
   }
 }
 
-struct VNNI_Sequence {
-  __m256i operator()(__m256i acc, const __m256i x_s8, const __m256i y_u8) {
+__m256i vnni(__m256i acc, const __m256i y_u8, const __m256i x_s8) {
 #if __AVXVNNI__
     return _mm256_dpbusd_epi32(acc, y_u8, x_s8);
 #elif __AVX2__
@@ -227,8 +229,7 @@ struct VNNI_Sequence {
 #else
 #error "at least AVX2 is required!"
 #endif
-  }
-};
+}
 
 // intrinsic helpers
 //  VNNI has long latency, high throughput, thus requires more independent data
