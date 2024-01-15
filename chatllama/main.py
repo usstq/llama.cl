@@ -204,6 +204,20 @@ class llmop_embedding(object):
     def __repr__(self):
         return f"llmop_embedding(weight: {self.weight.shape})"
 
+class llmop_embedding_q8c(object):
+    def __init__(self, weight):
+        self.weight, self.scales = llmops.embedding_q8c_quant_w(to_lt(weight))
+
+    def __call__(self, input_ids):
+        # shape infer + output memory allocation are done explicitly as a separate step
+        output = llmops.empty(*input_ids.shape, self.weight.shape[1])
+        # inference is done w/o shape-info
+        llmops.embedding_q8c(output, input_ids, self.weight, self.scales)
+        return output
+
+    def __repr__(self):
+        return f"llmop_embedding_q8c(weight: {self.weight.shape})"
+
 
 #=================================================================
 # input_ids  : [batch, query_len]
@@ -252,7 +266,7 @@ class Model(nn.Module):
         
         OP_fc = llmop_fc_q4a
         OP_rmsnorm = llmop_rmsnorm
-        OP_embedding = llmop_embedding
+        OP_embedding = llmop_embedding_q8c
 
         # the consts capture constant known at compile-time 
         self.op_dict = {
@@ -558,6 +572,7 @@ def main():
         if args.save:
             model.save('saved_model.pkl')
     else:
+        print(f"Loading from {args.model}...")
         model.load(args.model)
 
     print(f" rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MiB")

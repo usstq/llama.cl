@@ -6,6 +6,7 @@
 #include "utils.hpp"
 #include "op_fc.hpp"
 #include "op_attn.hpp"
+#include "op_embedding.hpp"
 #include "op_misc.hpp"
 #include "op_onednn.hpp"
 
@@ -141,6 +142,9 @@ PYBIND11_MODULE(llmops, m) {
       });
 
   m.def("embedding", &embedding);
+  m.def("embedding_q8c_quant_w", &embedding_q8c_quant_w);
+  m.def("embedding_q8c", &embedding_q8c);
+
   m.def("rmsnorm", &rmsnorm);
   m.def("iadd", &iadd);
   m.def("imul", &imul);

@@ -135,47 +135,6 @@ void itrans(tensor a, const std::string& op) {
   ASSERT(false);
 }
 
-// https://pytorch.org/docs/stable/generated/torch.nn.functional.embedding.html
-template <typename Tidx, typename Tvalue = float>
-static void _embedding_template(tensor output, tensor input, tensor weight) {
-  auto embedding_dim = weight.size(1);
-  auto* src = input.data<Tidx>();
-  auto* dst = output.data<Tvalue>();
-  parallel_nt(0, input.numel(), 0, [&](int64_t i0, int64_t i1) {
-    for (int64_t i = i0; i < i1; i++) {
-      auto index = src[i];
-      memcpy(dst + i * embedding_dim, &weight.at<Tvalue>({index, 0}),
-             embedding_dim * weight.item_size());
-    }
-  });
-}
-void embedding(tensor output, tensor input, tensor weight) {
-  ASSERT(weight.is<float>(2));
-  ASSERT(output.is<float>());
-
-  auto vocab_size = weight.size(0);
-  auto embedding_dim = weight.size(1);
-  auto rank = input.rank();
-
-  auto infer_shape = [&]() {
-    std::vector<int64_t> oshape(rank + 1);
-    for (int i = 0; i < rank; i++)
-      oshape[i] = input.size(i);
-    oshape[rank] = embedding_dim;
-    return oshape;
-  };
-
-  ASSERT(infer_shape() == output.shape());
-
-  if (input.is<int32_t>()) {
-    _embedding_template<int32_t>(output, input, weight);
-  } else if (input.is<long>()) {
-    _embedding_template<long>(output, input, weight);
-  } else {
-    _embedding_template<int64_t>(output, input, weight);
-  }
-}
-
 // https://github.com/huggingface/transformers/blob/c5be38cd27bee92be73c73ba09aec8bedf841423/src/transformers/models/llama/modeling_llama.py#L105
 // https://arxiv.org/pdf/1910.07467.pdf
 void rmsnorm(tensor input, tensor weight, float variance_epsilon) {

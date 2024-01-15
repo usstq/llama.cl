@@ -3,6 +3,13 @@
 #include <omp.h>
 #include <stdint.h>
 #include <string>
+
+#ifdef _WIN32
+#include <intrin.h>
+#else
+#include <x86intrin.h>
+#endif
+
 //=================================================================================
 inline int64_t divup(int64_t x, int64_t y) {
   return (x + y - 1) / y;
@@ -71,12 +78,6 @@ struct Env {
 };
 
 //=================================================================================
-#ifdef _WIN32
-#include <intrin.h>
-#else
-#include <x86intrin.h>
-#endif
-
 typedef short float16;
 float16 to_fp16(float v) {
   return static_cast<float16>(_mm_cvtsi128_si32(

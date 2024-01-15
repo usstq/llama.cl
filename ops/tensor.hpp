@@ -5,6 +5,7 @@
 #include <ostream>
 #include <sstream>
 #include <typeinfo>
+#include <stdint.h>
 
 #ifdef _WIN32
 #include <cstdlib>
