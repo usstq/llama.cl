@@ -46,3 +46,13 @@ Chat with the model
 # export quantized 4bit pickle to saved_model.pkl (default pickle )
 python ./chatllama/main.py -hf /path/to/hugging_face_model/ --save --kv-len 2048
 ```
+
+## PPL test
+
+`python ./chatllama/main.py --ppl ./wikitext-2/wiki.test.raw`
+
+| Model    | Measure          | F32   |  Q4_1(32)  |  Q4_1(128)  | 
+| -------- | -------          |-------|------------|-------------|
+| Llama-7B | fc weight size   | 26G   |  4.0G      |  3.4G       | 
+|          | ms/tok @ 8 Pcore | 383   |   77       |   67        | 
+|          |  perplexity      | 7.49  |  7.92      |  8.20       | 

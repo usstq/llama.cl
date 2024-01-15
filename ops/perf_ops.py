@@ -11,6 +11,7 @@ sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "build"
 
 import llmops
 import numpy
+import argparse
 
 def to_lt(a):
     if a is None:
@@ -190,7 +191,6 @@ def test_fc(kernel, B = 1, M = 1, N = 4096*3, K = 4096, repeats = 100):
     #weight = torch.rand(N, K, dtype=torch.float32)
     # weight can be perfected re-constructed by i4 quantization
     # input can be perfected re-constructed by i8 quantization
-    print(f"**** test_fc  {kernel.__name__:6}   B,M,N,K={B},{M},{N},{K} ****")
 
     weight = torch.randint(-8, 8, (N, K), dtype=torch.float32)
     input = torch.randint(-127, 128, (B, M, K), dtype=torch.float32)
@@ -206,6 +206,8 @@ def test_fc(kernel, B = 1, M = 1, N = 4096*3, K = 4096, repeats = 100):
 
     weight_q4a = llmops.offline_FC_quant_Q4A(to_lt(weight))
     weight_dq4a = llmops.offline_FC_dequant_Q4A(weight_q4a).numpy()
+
+    print(f"**** test_fc  {kernel.__name__:6}   B,M,N,K={B},{M},{N},{K}   weight_q4a.shape=[{N}, {K}]=>{weight_q4a.shape} ****")
 
     ref = torch.nn.functional.linear(input, weight, None).numpy()
     out = kernel(to_lt(input), weight_q4a, N).numpy()
@@ -307,7 +309,23 @@ def main_mha(test_acc = True):
     test_mha(llmops.attention_rope2, 2047, 1, 10)
 
 if __name__ == '__main__':
-    print("********* Note: 1GB=1,000,000,000 Bytes *********")
+    parser = argparse.ArgumentParser('')
+    parser.add_argument('-m', '--dimM', nargs="+", type=int, default=[1,2,4,8])
+    parser.add_argument('-n', '--dimN', nargs="+", type=int, default=[32*8*16])
+    parser.add_argument('-k', '--dimK', nargs="+", type=int, default=[40960])
+    parser.add_argument('-r', '--repeat', type=int, default=4)
+    parser.add_argument('prompt', type=str, nargs='?')
+
+    args = parser.parse_args()
+    print(f"********* Note: 1GB=1,000,000,000 Bytes *********")
+    print(f"m = {args.dimM}")
+    print(f"n = {args.dimN}")
+    print(f"k = {args.dimK}")
+
+    import itertools
+    for m, n, k in itertools.product(args.dimM, args.dimN, args.dimK):
+        test_fc(llmops.fc_Q4A, M=m, N=n, K=k, repeats=args.repeat)
+
     #main()
     #main_qk((llmops.mm_qk, llmops.mm_qk42, llmops.mm_qk24, llmops.onednn_qk))
     #for ker in (llmops.mm_qk42, llmops.mm_qk81, llmops.onednn_qk): test_qk(ker, 8, 64, 10)
@@ -315,6 +333,8 @@ if __name__ == '__main__':
     #for ker in (llmops.mm_qk42, llmops.mm_qk81, llmops.onednn_qk): test_qk(ker, 256, 256, 1000)
     # main_mha(False)
     #test_fc(llmops.fc_Q4A, M=1, repeats=4)
-    test_fc(llmops.fc_Q4A, M=1, N=32*8*16, K=4096, repeats=4)
-    #test_fc(llmops.fc_Q4A, M=2, N=32*8*16, K=4096, repeats=4)
+    #test_fc(llmops.fc_Q4A, M=1, N=32*8*16, K=40960, repeats=4)
+    #test_fc(llmops.fc_Q4A, M=2, N=32*8*16, K=40960, repeats=4)
+    #test_fc(llmops.fc_Q4A, M=4, N=32*8*16, K=40960, repeats=4)
+    #test_fc(llmops.fc_Q4A, M=8, N=32*8*16, K=40960, repeats=4)
     #test_fc(llmops.fc_Q4A2, M=2, N=32*8*16, K=4096, repeats=4)
