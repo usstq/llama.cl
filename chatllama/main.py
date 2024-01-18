@@ -329,6 +329,10 @@ class Model(nn.Module):
     # and the best way to pass such resource into pipeline is inputs
     # we should set it as inputs instead of object
     def forward(self, input_ids, kv_cache, kv_cache_slots, position_id):
+        tpool = llmops.tensor_pool()
+        #print(tpool.summary(0))
+        tpool.clear()
+
         op_dict = self.op_dict
 
         input_ids = to_lt(input_ids)
@@ -395,6 +399,9 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
     print(f">>>> kvcache size : {kv_cache.size()/1e9:.2f} GB   with max_kv_len {max_kv_len}")
     print(f">>>>          rss : {psutil.Process().memory_info().rss/(1e9):.2f} GB")
 
+    tpool = llmops.tensor_pool()
+    print(tpool.summary(1))
+
     with torch.no_grad():
         sys_msg = system_message
         while True:
@@ -459,12 +466,14 @@ def simple_chat_pipeline(model, org_prompt, max_kv_len, system_message, verbose)
                 second_tok_count += 1
                 next_tokens = torch.argmax(logits, dim=-1).reshape(batch_size, 1)
                 streamer.put(next_tokens)
+
             second_tok_latency = 0 if (second_tok_count == 0) else ((time.time() - second_tok_latency) / second_tok_count)
             streamer.end()
             if early_stop:
                 print("\033[0;31m", early_stop)
 
             print("\033[0;90m", f" position_id: {kv_cache.position_id}  latency: {first_tok_latency*1e3:.2f} ms + {second_tok_latency*1e3:.2f}ms x {second_tok_count}  rss: {psutil.Process().memory_info().rss/(1024**2):.1f} MB")
+            #tpool.summary()
             print("\033[00m")
             if org_prompt:
                 break
@@ -555,8 +564,10 @@ def main():
     parser.add_argument('-v', '--verbose', action="store_true")
     parser.add_argument('-d', '--device', default="cpu")
     parser.add_argument('prompt', type=str, nargs='?')
-    
+    parser.add_argument('--pool', type=int, default=1)
     args = parser.parse_args()
+
+    llmops.tensor_pool().set_policy(args.pool)
 
     if args.ppl:
         measure_perplexity(args)

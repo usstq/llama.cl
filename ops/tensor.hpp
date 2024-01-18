@@ -6,9 +6,15 @@
 #include <sstream>
 #include <typeinfo>
 #include <stdint.h>
+#include <map>
+#include <thread>
 
 #ifdef _WIN32
 #include <cstdlib>
+#endif
+
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+#include <sycl/sycl.hpp>
 #endif
 
 template <typename... Args>
@@ -28,6 +34,173 @@ static inline std::string file_line_no(const char * file, int line_no) {
     throw_rt_error("assert", #condition, "failed at", file_line_no(__FILE__, __LINE__), \
                    "  ");                                                      \
   }
+
+std::thread::id first_tid;
+// pool:
+//      cache all small size (< 1MB) buffers for future reallocation
+//      big buffers are not cached to avoid waste of memory (since
+//      big buffer means time-consuming computation, allocation
+//      overhead is relatively small)
+//
+// NN-topology often has repeated sub-graphs, this simple pool reuses buffers between adjacent layers
+// and to avoid waste of memory, pipeline is supposed to clear the pool after each model inference
+//
+struct PoolAllocator {
+    int policy = 0;
+
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+    static sycl::queue& default_sycl_queue() {
+        static thread_local sycl::queue q{sycl::property::queue::in_order()};
+        static auto initialized = [](sycl::queue& q) {
+            auto dev_name = q.get_device().get_info<sycl::info::device::name>();
+            std::cout << "sycl device used for tensor :" << dev_name << std::endl;
+            return true;
+        }(q);
+        return q;
+    }
+#endif
+
+    void * _alloc(size_t size, size_t alignment = 64) {
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+    if (policy == 1)
+        return sycl::aligned_alloc_shared(alignment, size, default_sycl_queue());
+#endif
+    // fallback to normal alloc
+#ifdef _WIN32
+        return _aligned_malloc(size, alignment);
+#else
+        void* ptr;
+        ::posix_memalign(&ptr, alignment, size);
+        return ptr;
+#endif
+    }
+
+    void _free(void * ptr) {
+#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
+    if (policy == 1) {
+        sycl::free(ptr, PoolAllocator::default_sycl_queue());
+        return;
+    }
+#endif
+    // fallback to normal alloc
+#ifdef _WIN32
+        _aligned_free(ptr);
+#else
+        ::free(ptr);
+#endif
+    }
+
+    std::multimap<size_t, void*> pool;
+    std::thread::id this_id;
+    int to_be_recycle = 0;
+    size_t recycle_times = 0;
+    size_t recycle_size = 0;
+    size_t alloc_size_req = 0;
+    size_t alloc_size_real = 0;
+    size_t alloc_times_req = 0;
+    size_t alloc_times_real = 0;
+
+    PoolAllocator() {
+        this_id = std::this_thread::get_id();
+        if (first_tid == std::thread::id{}) {
+            first_tid = this_id;
+        }
+        std::cout << "PoolAllocator #" << this_id << std::endl;
+    }
+
+    ~PoolAllocator() {
+        summary(1);
+        clear();
+    }
+
+    void set_policy(int pol) {
+        clear();
+        policy = pol;
+    }
+
+    std::string summary(int verbose) {
+        // print all buffers
+        size_t total_sz = 0;
+        size_t total_cnt = 0;
+        std::map<size_t, int> hist;
+        for (auto it = pool.begin(); it != pool.end(); ++it) {
+            auto sz = it->first;
+            total_sz += sz;
+            total_cnt ++;
+            if (hist.count(sz) == 0)
+                hist[sz] = 1;
+            else
+                hist[sz]++;
+        }
+        std::stringstream ss;
+        ss << "PoolAllocator #" << this_id << " : ";
+        ss << " pool_buffers=" << total_cnt
+           << " pool_size=" << total_sz/1024.0 << " KB"
+           << " alloc_size=" << alloc_size_real*100/alloc_size_req << "%(" << alloc_size_real << "/" << alloc_size_req << ")"
+           << " alloc_times=" << alloc_times_real*100/alloc_times_req << "%(" << alloc_times_real << "/" << alloc_times_req << ")"
+           << " to_be_recycle=" << to_be_recycle;
+
+        if (verbose > 0) {
+            ss << " buffers=[";
+            for (auto& entry : hist) {
+                auto sz = entry.first;
+                auto cnt = entry.second;
+                if (cnt == 1)
+                    ss << sz;
+                else
+                    ss << sz << "x" << cnt;
+                ss << ", ";
+            }
+            ss << "]";
+        }
+        return ss.str();
+    }
+
+    void clear() {
+        for (auto& entry : pool) {
+            _free(entry.second);
+        }
+        pool.clear();
+        alloc_times_req = 0;
+        alloc_times_real = 0;
+        alloc_size_req = 0;
+        alloc_size_real = 0;
+    }
+
+    std::shared_ptr<void> alloc(size_t size, size_t alignment = 64) {
+        alloc_times_req++;
+        alloc_size_req += size;
+        if (size >= 1024 * 1024) {
+            alloc_times_real++;
+            alloc_size_real += size;
+            return std::shared_ptr<void>(_alloc(size), [this](void* p) { _free(p); });
+        }
+
+        auto it = pool.find(size);
+        void* buff;
+        if (it == pool.end()) {
+            alloc_times_real++;
+            alloc_size_real += size;
+            buff = _alloc(size);
+            //if (first_tid != this_id)
+            //    std::cout << this_id << " alloc " << size << ", new buff=" << std::hex << buff << std::dec << std::endl;
+        } else {
+            buff = it->second;
+            pool.erase(it);
+            //if (first_tid != this_id)
+            //    std::cout << this_id << " alloc " << size << ", reuse buff=" << std::hex << buff << std::dec << std::endl;
+        }
+
+        to_be_recycle++;
+        return std::shared_ptr<void>(buff, [this, size](void* p) {
+            std::thread::id this_id = std::this_thread::get_id();
+            //if (first_tid != this_id)
+            //    std::cout << this_id << " return " << size << ", buff=" << std::hex << p << std::dec << std::endl;
+            to_be_recycle--;
+            pool.insert({size, p});
+        });
+    }
+};
 
 struct tensor {
   // coordinates inside tensor
@@ -72,6 +245,14 @@ struct tensor {
       return *this;
     }
   };
+
+  static PoolAllocator& pool() {
+    static thread_local PoolAllocator tpool;
+    return tpool;
+  }
+  std::shared_ptr<void> pool_alloc(size_t size, size_t alignment = 64) {
+    return pool().alloc(size, alignment);
+  }
 
   indices get_indices(int64_t index_flatten_1d) {
     indices idx(*this);
@@ -166,13 +347,7 @@ struct tensor {
       m_ptr = std::shared_ptr<void>(ptr, [](void*) {});
     } else {
       auto capacity_new = total_cnt * m_item_size;
-#ifdef _WIN32
-      m_ptr = std::shared_ptr<void>(_aligned_malloc(capacity_new, 64),
-                                    [](void* p) { _aligned_free(p); });
-#else
-      ::posix_memalign(&ptr, 64, capacity_new);
-      m_ptr = std::shared_ptr<void>(ptr, [](void* p) { ::free(p); });
-#endif
+      m_ptr = pool_alloc(capacity_new);
     }
   }
 

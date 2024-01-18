@@ -962,10 +962,23 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
     const int block_q = 64;
     const int block_k = 64;
     ASSERT((S % 16) == 0);
+
+    tensor attn_w;
+    #pragma omp parallel
+    {
+        int n_threads = omp_get_num_threads();
+        #pragma omp master
+        {
+            attn_w.reset<float>(nullptr, {n_threads, block_q, kvLen});
+        }
+    }
+
     parallel_nt(0, B * H, 0, [&](int64_t bh0, int64_t bh1) {
         // per thread local buffer
-        tensor attn_w;
-        attn_w.reset(static_cast<float*>(nullptr), {block_q, kvLen});
+        auto tid = omp_get_thread_num();
+        auto * pi_attn_w = &attn_w.at<int32_t>({tid, 0, 0});
+        auto * pf_attn_w = &attn_w.at<float>({tid, 0, 0});
+        auto attn_w_stride = attn_w.stride(1);
         for (auto bh = bh0; bh < bh1; bh++) {
             auto h = bh % H;
             auto b = bh / H;
@@ -984,7 +997,7 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
                                   q.stride(2),
                                   &kcache.at<float>({b, h, pk0, 0}),
                                   kcache.stride(2),
-                                  &attn_w.at<int32_t>({0, pk0}),
+                                  pi_attn_w + pk0,
                                   kvLen,
                                   pq1 - pq0,
                                   pk1 - pk0);
@@ -992,7 +1005,7 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
                 prof = PROFILE("softmax");
                 // block_q rows of attn is ready (& hot in cache), do softmax and W*V
                 for (int64_t pq = pq0; pq < pq1; pq++) {
-                    auto* pw = &attn_w.at<float>({pq - pq0, 0});
+                    auto* pw = pf_attn_w + (pq - pq0) * attn_w_stride;
                     for (int64_t pk = pq + 1; pk < qL; pk++) {
                         pw[slots[pk]] = std::numeric_limits<float>::lowest();
                     }
@@ -1002,8 +1015,8 @@ void attention_rope2(tensor q,          // [B, qL, H*S]
                 // attn : [block_q, kvLen]
                 // v    : [kvLen, S]
                 // out  : [block_q, S]
-                wv_kernel_4x16(&attn_w.at<float>({0, 0}),
-                               attn_w.stride(0),
+                wv_kernel_4x16(pf_attn_w,
+                               attn_w_stride,
                                &vcache.at<float>({b, h, 0, 0}),
                                vcache.stride(2),
                                &q.at<float>({b, h, pq0, 0}),

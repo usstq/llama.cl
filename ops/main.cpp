@@ -164,11 +164,16 @@ PYBIND11_MODULE(llmops, m) {
   m.def("mm_qk42", &mm_qk42);
   m.def("mm_qk24", &mm_qk24);
   m.def("mm_qk81", &mm_qk81);
+
+  py::class_<PoolAllocator>(m, "PoolAllocator")
+    .def("set_policy", &PoolAllocator::set_policy)
+    .def("summary", &PoolAllocator::summary)
+    .def("clear", &PoolAllocator::clear);
+
+  m.def("tensor_pool", &tensor::pool, py::return_value_policy::reference);
+
 #ifdef WITH_DNNL
   m.def("onednn_qk", &onednn_qk);
 #endif
 
-#if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
-  m.def("syclmain", &syclmain);
-#endif
 }

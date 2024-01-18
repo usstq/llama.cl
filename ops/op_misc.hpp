@@ -19,6 +19,7 @@ tensor clone(const tensor& old) {
   return newt;
 }
 
+#if 0
 #if defined(SYCL_LANGUAGE_VERSION) && defined(__INTEL_LLVM_COMPILER)
 #include <sycl/sycl.hpp>
 using namespace sycl;
@@ -46,6 +47,7 @@ int syclmain() {
   free(data, q);
   return 0;
 }
+#endif
 #endif
 
 // inplace add : a += b (with optinal broadcast)
