@@ -35,7 +35,6 @@ static inline std::string file_line_no(const char * file, int line_no) {
                    "  ");                                                      \
   }
 
-std::thread::id first_tid;
 // pool:
 //      cache all small size (< 1MB) buffers for future reallocation
 //      big buffers are not cached to avoid waste of memory (since
@@ -93,8 +92,6 @@ struct PoolAllocator {
     std::multimap<size_t, void*> pool;
     std::thread::id this_id;
     int to_be_recycle = 0;
-    size_t recycle_times = 0;
-    size_t recycle_size = 0;
     size_t alloc_size_req = 0;
     size_t alloc_size_real = 0;
     size_t alloc_times_req = 0;
@@ -102,9 +99,6 @@ struct PoolAllocator {
 
     PoolAllocator() {
         this_id = std::this_thread::get_id();
-        if (first_tid == std::thread::id{}) {
-            first_tid = this_id;
-        }
         std::cout << "PoolAllocator #" << this_id << std::endl;
     }
 
